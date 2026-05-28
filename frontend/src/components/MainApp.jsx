@@ -37,14 +37,16 @@ const MainApp = () => {
     }
   };
 
+  const getAudioUrlForTranscript = (transcript) => {
+    if (!transcript) return null;
+    if (transcript.audio_path) {
+      return `${API}/transcriptions/${transcript.id}/audio`;
+    }
+    return null;
+  };
+
   const handleTranscribe = async (file, audioBlob = null) => {
     setLoading(true);
-
-    // Set audio URL for playback (use blob for recordings, file for uploads)
-    const blob = audioBlob || file;
-    const audioUrl = URL.createObjectURL(blob);
-    setCurrentAudioUrl(audioUrl);
-
     const formData = new FormData();
     formData.append('file', file);
 
@@ -54,6 +56,10 @@ const MainApp = () => {
       });
       
       setCurrentTranscript(response.data);
+      // Prefer backend-served URL (persisted); fall back to blob URL
+      const audioUrl = getAudioUrlForTranscript(response.data) ||
+        URL.createObjectURL(audioBlob || file);
+      setCurrentAudioUrl(audioUrl);
       await fetchTranscriptions();
       toast.success('Transcription completed!');
     } catch (error) {
@@ -103,9 +109,26 @@ const MainApp = () => {
     }
   };
 
+  const handleUpdateSpeakerLabels = async (transcriptId, labels) => {
+    try {
+      await axios.patch(`${API}/transcriptions/${transcriptId}/speakers`, {
+        speaker_labels: labels
+      });
+      // Update local state
+      setCurrentTranscript(prev => prev ? { ...prev, speaker_labels: labels } : prev);
+      setTranscriptions(prev => prev.map(t => 
+        t.id === transcriptId ? { ...t, speaker_labels: labels } : t
+      ));
+      toast.success('Speaker names updated!');
+    } catch (error) {
+      toast.error('Failed to update speaker names');
+    }
+  };
+
   const handleSelectTranscript = (trans) => {
     setCurrentTranscript(trans);
-    setCurrentAudioUrl(null); // Audio not available for historical transcripts
+    // Use persisted audio URL if available
+    setCurrentAudioUrl(getAudioUrlForTranscript(trans));
   };
 
   const handleDeleteTranscript = async (id) => {
@@ -160,6 +183,8 @@ const MainApp = () => {
         onProcessText={handleProcessText}
         onDiarize={handleDiarize}
         onExport={handleExport}
+        onUpdateSpeakerLabels={handleUpdateSpeakerLabels}
+        apiUrl={API}
         loading={loading}
       />
       <Toaster position="top-right" richColors />

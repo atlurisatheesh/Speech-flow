@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect } from 'react';
-import { Upload, Sparkles, Copy, Download, Loader2, Users, ChevronDown, FileText, Captions } from 'lucide-react';
+import { Upload, Sparkles, Copy, Download, Loader2, Users, ChevronDown, FileText, Captions, Pencil, Check, X } from 'lucide-react';
 import { Button } from './ui/button';
 import { Textarea } from './ui/textarea';
+import { Input } from './ui/input';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -20,6 +21,8 @@ const EditorPane = ({
   onProcessText, 
   onDiarize, 
   onExport,
+  onUpdateSpeakerLabels,
+  apiUrl,
   loading 
 }) => {
   const [isProcessing, setIsProcessing] = useState(false);
@@ -28,25 +31,35 @@ const EditorPane = ({
   const [showOriginal, setShowOriginal] = useState(false);
   const [diarizedSegments, setDiarizedSegments] = useState(null);
   const [currentTime, setCurrentTime] = useState(0);
+  const [liveText, setLiveText] = useState('');
+  const [editingSpeaker, setEditingSpeaker] = useState(null);
+  const [editingSpeakerName, setEditingSpeakerName] = useState('');
   const fileInputRef = useRef(null);
   const audioPlayerRef = useRef(null);
 
   useEffect(() => {
-    // Reset processed state when transcript changes
     setDisplayText('');
     setShowOriginal(false);
     setDiarizedSegments(null);
+    setLiveText('');
+    setEditingSpeaker(null);
   }, [transcript?.id]);
 
   const handleFileSelect = async (e) => {
     const file = e.target.files?.[0];
     if (file) {
+      setLiveText('');
       await onTranscribe(file);
     }
   };
 
   const handleRecordingComplete = async (file, blob) => {
     await onTranscribe(file, blob);
+    setLiveText('');
+  };
+
+  const handleLiveText = (chunk) => {
+    setLiveText(prev => prev ? `${prev} ${chunk}` : chunk);
   };
 
   const handleAIProcess = async () => {
@@ -93,6 +106,31 @@ const EditorPane = ({
     }
   };
 
+  const handleStartEditSpeaker = (speakerKey) => {
+    const currentName = (transcript?.speaker_labels?.[speakerKey]) || speakerKey;
+    setEditingSpeaker(speakerKey);
+    setEditingSpeakerName(currentName);
+  };
+
+  const handleSaveSpeakerName = async () => {
+    if (!editingSpeaker || !editingSpeakerName.trim()) {
+      setEditingSpeaker(null);
+      return;
+    }
+    const newLabels = { 
+      ...(transcript?.speaker_labels || {}), 
+      [editingSpeaker]: editingSpeakerName.trim() 
+    };
+    await onUpdateSpeakerLabels(transcript.id, newLabels);
+    setEditingSpeaker(null);
+    setEditingSpeakerName('');
+  };
+
+  const getSpeakerDisplay = (speakerKey) => {
+    if (!speakerKey) return null;
+    return transcript?.speaker_labels?.[speakerKey] || speakerKey;
+  };
+
   const formatTime = (t) => {
     const m = Math.floor(t / 60);
     const s = Math.floor(t % 60);
@@ -101,6 +139,11 @@ const EditorPane = ({
 
   const currentText = showOriginal ? transcript?.original_text : (displayText || transcript?.text);
   const segments = diarizedSegments || transcript?.segments;
+  
+  // Collect unique speakers for rename UI
+  const uniqueSpeakers = segments
+    ? Array.from(new Set(segments.map(s => s.speaker).filter(Boolean)))
+    : [];
 
   return (
     <div className="flex-1 flex flex-col" data-testid="editor-pane">
@@ -131,8 +174,8 @@ const EditorPane = ({
               Into Perfect Text
             </h1>
             <p className="text-base sm:text-lg text-[#0A0A0B] font-medium mb-8 leading-relaxed max-w-2xl mx-auto">
-              AI-powered transcription with automatic grammar correction, filler word removal,
-              speaker identification, and 100+ language support.
+              AI-powered transcription with live streaming, speaker identification, 
+              grammar correction, and persistent audio playback across sessions.
             </p>
 
             <input
@@ -144,19 +187,38 @@ const EditorPane = ({
               data-testid="file-input"
             />
             
-            <div className="flex flex-wrap items-center justify-center gap-4">
-              <MicRecorder onRecordingComplete={handleRecordingComplete} disabled={loading} />
+            <div className="flex flex-wrap items-center justify-center gap-3">
+              <MicRecorder 
+                onRecordingComplete={handleRecordingComplete} 
+                onLiveText={handleLiveText}
+                apiUrl={apiUrl}
+                disabled={loading} 
+              />
               <Button
                 onClick={() => fileInputRef.current?.click()}
                 size="lg"
                 variant="outline"
-                className="bg-white border-2 border-[#002FA7] text-[#002FA7] hover:bg-[#002FA7] hover:text-white px-8 py-6 text-base font-semibold rounded-sm transition-colors duration-200 shadow-lg"
+                className="bg-white border-2 border-[#002FA7] text-[#002FA7] hover:bg-[#002FA7] hover:text-white px-6 py-6 text-base font-semibold rounded-sm transition-colors duration-200 shadow-lg"
                 data-testid="upload-button"
               >
                 <Upload className="w-5 h-5 mr-2" />
-                Upload Audio File
+                Upload
               </Button>
             </div>
+
+            {liveText && (
+              <div 
+                className="mt-8 mx-auto max-w-2xl bg-white/90 backdrop-blur-sm border border-[#002FA7] rounded-sm p-4 text-left"
+                data-testid="live-transcription-preview"
+              >
+                <p className="text-xs uppercase tracking-[0.2em] font-bold text-[#002FA7] mb-2">
+                  Live Transcription
+                </p>
+                <p className="text-base text-[#0A0A0B] leading-relaxed">
+                  {liveText}
+                </p>
+              </div>
+            )}
 
             <p className="text-xs text-[#0A0A0B] mt-6 uppercase tracking-[0.2em] font-bold bg-white/80 backdrop-blur-sm inline-block px-4 py-2 rounded-sm">
               Supports MP3, WAV, M4A, WEBM • Max 25MB
@@ -170,7 +232,7 @@ const EditorPane = ({
         <div className="flex-1 flex flex-col" data-testid="transcript-view">
           {/* Toolbar */}
           <div className="border-b border-[#E4E4E7] px-8 py-4 bg-white/70 backdrop-blur-xl">
-            <div className="flex items-center justify-between max-w-5xl mx-auto">
+            <div className="flex items-center justify-between max-w-5xl mx-auto flex-wrap gap-3">
               <div>
                 <h2 
                   className="text-xl font-semibold tracking-tight" 
@@ -190,10 +252,20 @@ const EditorPane = ({
                       {formatTime(transcript.duration)}
                     </p>
                   )}
+                  {transcript.audio_path && (
+                    <p className="text-xs text-[#002FA7] uppercase tracking-[0.2em] font-semibold">
+                      ● Audio Saved
+                    </p>
+                  )}
                 </div>
               </div>
-              <div className="flex gap-2">
-                <MicRecorder onRecordingComplete={handleRecordingComplete} disabled={loading} />
+              <div className="flex gap-2 items-center">
+                <MicRecorder 
+                  onRecordingComplete={handleRecordingComplete}
+                  onLiveText={handleLiveText}
+                  apiUrl={apiUrl}
+                  disabled={loading} 
+                />
                 <Button
                   onClick={() => fileInputRef.current?.click()}
                   variant="outline"
@@ -248,11 +320,7 @@ const EditorPane = ({
                       size="sm"
                       data-testid="ai-enhance-button"
                     >
-                      {isProcessing ? (
-                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                      ) : (
-                        <Sparkles className="w-4 h-4 mr-2" />
-                      )}
+                      {isProcessing ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Sparkles className="w-4 h-4 mr-2" />}
                       AI Enhance
                     </Button>
                     <Button
@@ -263,11 +331,7 @@ const EditorPane = ({
                       className="rounded-sm border-[#E4E4E7]"
                       data-testid="diarize-button"
                     >
-                      {isDiarizing ? (
-                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                      ) : (
-                        <Users className="w-4 h-4 mr-2" />
-                      )}
+                      {isDiarizing ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Users className="w-4 h-4 mr-2" />}
                       Identify Speakers
                     </Button>
                     {displayText && (
@@ -283,48 +347,28 @@ const EditorPane = ({
                     )}
                   </div>
                   <div className="flex gap-2">
-                    <Button
-                      onClick={handleCopy}
-                      variant="outline"
-                      size="sm"
-                      className="rounded-sm border-[#E4E4E7]"
-                      data-testid="copy-button"
-                    >
+                    <Button onClick={handleCopy} variant="outline" size="sm" className="rounded-sm border-[#E4E4E7]" data-testid="copy-button">
                       <Copy className="w-4 h-4 mr-2" />
                       Copy
                     </Button>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="rounded-sm border-[#E4E4E7]"
-                          data-testid="export-button"
-                        >
+                        <Button variant="outline" size="sm" className="rounded-sm border-[#E4E4E7]" data-testid="export-button">
                           <Download className="w-4 h-4 mr-2" />
                           Export
                           <ChevronDown className="w-3 h-3 ml-2" />
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="rounded-sm">
-                        <DropdownMenuItem
-                          onClick={() => onExport(transcript.id, 'txt')}
-                          data-testid="export-txt"
-                        >
+                        <DropdownMenuItem onClick={() => onExport(transcript.id, 'txt')} data-testid="export-txt">
                           <FileText className="w-4 h-4 mr-2" />
                           Plain Text (.txt)
                         </DropdownMenuItem>
-                        <DropdownMenuItem
-                          onClick={() => onExport(transcript.id, 'srt')}
-                          data-testid="export-srt"
-                        >
+                        <DropdownMenuItem onClick={() => onExport(transcript.id, 'srt')} data-testid="export-srt">
                           <Captions className="w-4 h-4 mr-2" />
                           SubRip (.srt)
                         </DropdownMenuItem>
-                        <DropdownMenuItem
-                          onClick={() => onExport(transcript.id, 'vtt')}
-                          data-testid="export-vtt"
-                        >
+                        <DropdownMenuItem onClick={() => onExport(transcript.id, 'vtt')} data-testid="export-vtt">
                           <Captions className="w-4 h-4 mr-2" />
                           WebVTT (.vtt)
                         </DropdownMenuItem>
@@ -333,14 +377,64 @@ const EditorPane = ({
                   </div>
                 </div>
 
-                {/* Segments View with click-to-seek (when audio + segments available) */}
-                {audioUrl && segments && segments.length > 0 && !displayText && (
+                {/* Speaker Rename Panel - only show when speakers exist */}
+                {uniqueSpeakers.length > 0 && (
                   <div 
-                    className="bg-white border border-[#E4E4E7] rounded-sm p-6 space-y-3"
-                    data-testid="segments-view"
+                    className="bg-[#F7F7F8] border border-[#E4E4E7] rounded-sm p-4"
+                    data-testid="speakers-panel"
                   >
+                    <p className="text-xs uppercase tracking-[0.2em] font-bold text-[#52525B] mb-3">
+                      Speakers ({uniqueSpeakers.length})
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {uniqueSpeakers.map((speakerKey) => (
+                        <div key={speakerKey} className="flex items-center gap-2 bg-white border border-[#E4E4E7] rounded-sm px-3 py-2" data-testid={`speaker-${speakerKey}`}>
+                          {editingSpeaker === speakerKey ? (
+                            <>
+                              <Input
+                                value={editingSpeakerName}
+                                onChange={(e) => setEditingSpeakerName(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') handleSaveSpeakerName();
+                                  if (e.key === 'Escape') setEditingSpeaker(null);
+                                }}
+                                autoFocus
+                                className="h-7 w-32 text-sm"
+                                data-testid={`speaker-name-input-${speakerKey}`}
+                              />
+                              <button onClick={handleSaveSpeakerName} className="text-[#002FA7] hover:bg-[#002FA7]/10 p-1 rounded" data-testid={`save-speaker-${speakerKey}`}>
+                                <Check className="w-4 h-4" />
+                              </button>
+                              <button onClick={() => setEditingSpeaker(null)} className="text-[#EF4444] hover:bg-[#EF4444]/10 p-1 rounded" data-testid={`cancel-speaker-${speakerKey}`}>
+                                <X className="w-4 h-4" />
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <span className="text-sm font-semibold text-[#0A0A0B]" data-testid={`speaker-label-${speakerKey}`}>
+                                {getSpeakerDisplay(speakerKey)}
+                              </span>
+                              <button 
+                                onClick={() => handleStartEditSpeaker(speakerKey)} 
+                                className="text-[#52525B] hover:text-[#002FA7] p-1 rounded transition-colors" 
+                                data-testid={`edit-speaker-${speakerKey}`}
+                                title="Rename speaker"
+                              >
+                                <Pencil className="w-3 h-3" />
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Segments View with click-to-seek */}
+                {audioUrl && segments && segments.length > 0 && !displayText && (
+                  <div className="bg-white border border-[#E4E4E7] rounded-sm p-6 space-y-3" data-testid="segments-view">
                     <p className="text-xs uppercase tracking-[0.2em] font-bold text-[#52525B] mb-2">
-                      Interactive Transcript {diarizedSegments && '• Speaker Identified'}
+                      Interactive Transcript {diarizedSegments && '• Speakers Identified'}
                     </p>
                     {segments.map((seg, idx) => {
                       const isActive = currentTime >= seg.start && currentTime <= seg.end;
@@ -362,7 +456,7 @@ const EditorPane = ({
                           <div className="flex-1">
                             {seg.speaker && (
                               <p className="text-xs font-bold uppercase tracking-wider text-[#002FA7] mb-1">
-                                {seg.speaker}
+                                {getSpeakerDisplay(seg.speaker)}
                               </p>
                             )}
                             <p className={`text-base leading-relaxed ${isActive ? 'text-[#0A0A0B] font-medium' : 'text-[#52525B]'}`}>
@@ -375,18 +469,13 @@ const EditorPane = ({
                   </div>
                 )}
 
-                {/* Plain Text View (when no audio or text is enhanced) */}
+                {/* Plain Text View */}
                 {(!audioUrl || !segments || segments.length === 0 || displayText) && (
-                  <div 
-                    className="bg-white border border-[#E4E4E7] rounded-sm p-8"
-                    data-testid="transcript-content"
-                  >
+                  <div className="bg-white border border-[#E4E4E7] rounded-sm p-8" data-testid="transcript-content">
                     <Textarea
                       value={currentText || ''}
                       onChange={(e) => {
-                        if (displayText) {
-                          setDisplayText(e.target.value);
-                        }
+                        if (displayText) setDisplayText(e.target.value);
                       }}
                       className="transcript-editor min-h-[400px] border-0 focus-visible:ring-0 p-0 resize-none text-base leading-relaxed"
                       style={{ fontFamily: 'IBM Plex Sans, sans-serif' }}

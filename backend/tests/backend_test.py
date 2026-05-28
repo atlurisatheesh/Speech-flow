@@ -209,3 +209,151 @@ class TestDictionary:
     def test_05_delete_word_404(self):
         r = requests.delete(f"{API}/dictionary/nonexistent")
         assert r.status_code == 404
+
+
+
+# === Iteration 3: Audio storage, speaker labels, chunk streaming ===
+class TestIteration3Storage:
+    """Tests for object storage integration (audio_path field) and audio retrieval"""
+    transcription_id = None
+    audio_path = None
+
+    def test_01_transcribe_returns_audio_path(self):
+        wav_bytes = _gen_wav_bytes(seconds=3)
+        files = {'file': ('iter3_test.wav', wav_bytes, 'audio/wav')}
+        r = requests.post(f"{API}/transcribe/file", files=files, timeout=180)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert 'audio_path' in data, "audio_path field missing from response"
+        # If storage is up, audio_path should be non-null and start with 'speechflow/audio/'
+        if data.get('audio_path'):
+            assert data['audio_path'].startswith('speechflow/audio/'), f"Unexpected audio_path: {data['audio_path']}"
+            assert data.get('audio_mime') == 'audio/wav'
+            TestIteration3Storage.audio_path = data['audio_path']
+        TestIteration3Storage.transcription_id = data['id']
+
+    def test_02_get_audio_returns_bytes(self):
+        tid = TestIteration3Storage.transcription_id
+        if not tid:
+            pytest.skip("no transcription created")
+        if not TestIteration3Storage.audio_path:
+            pytest.skip("storage was unavailable on upload - skipping audio retrieval")
+        r = requests.get(f"{API}/transcriptions/{tid}/audio", timeout=60)
+        assert r.status_code == 200, r.text
+        assert r.headers.get('content-type', '').startswith('audio/'), f"Got content-type: {r.headers.get('content-type')}"
+        assert len(r.content) > 100, "Audio response too small"
+        # Note: backend sets Cache-Control: public, max-age=31536000 but the
+        # k8s/cloudflare ingress rewrites it to no-store. We only assert
+        # body+content-type which is what the browser audio player needs.
+
+    def test_03_get_audio_404_nonexistent(self):
+        r = requests.get(f"{API}/transcriptions/nonexistent-id-xyz/audio")
+        assert r.status_code == 404
+        assert 'not found' in r.json().get('detail', '').lower()
+
+    def test_04_get_audio_404_no_audio_path(self):
+        # Create a transcription doc directly with no audio_path (simulate legacy)
+        # We can't reach DB directly here, but if there's a pre-existing legacy
+        # transcript in DB without audio_path, the endpoint should return 404.
+        # Try fetching all transcriptions, find one without audio_path, request its audio.
+        r = requests.get(f"{API}/transcriptions")
+        assert r.status_code == 200
+        legacy = [t for t in r.json() if not t.get('audio_path')]
+        if not legacy:
+            pytest.skip("no legacy transcript without audio_path available")
+        legacy_id = legacy[0]['id']
+        r = requests.get(f"{API}/transcriptions/{legacy_id}/audio")
+        assert r.status_code == 404
+        assert 'no audio' in r.json().get('detail', '').lower()
+
+    def test_99_cleanup(self):
+        if TestIteration3Storage.transcription_id:
+            requests.delete(f"{API}/transcriptions/{TestIteration3Storage.transcription_id}")
+
+
+class TestIteration3SpeakerLabels:
+    """Tests for PATCH /api/transcriptions/{id}/speakers"""
+    transcription_id = None
+
+    def test_01_setup_create_transcript(self):
+        wav_bytes = _gen_wav_bytes(seconds=2)
+        files = {'file': ('iter3_speakers.wav', wav_bytes, 'audio/wav')}
+        r = requests.post(f"{API}/transcribe/file", files=files, timeout=180)
+        assert r.status_code == 200, r.text
+        TestIteration3SpeakerLabels.transcription_id = r.json()['id']
+
+    def test_02_patch_speaker_labels(self):
+        tid = TestIteration3SpeakerLabels.transcription_id
+        if not tid:
+            pytest.skip("no transcript")
+        payload = {"speaker_labels": {"Speaker 1": "Alice", "Speaker 2": "Bob"}}
+        r = requests.patch(f"{API}/transcriptions/{tid}/speakers", json=payload, timeout=30)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data.get('speaker_labels') == payload['speaker_labels']
+
+    def test_03_speaker_labels_persist(self):
+        tid = TestIteration3SpeakerLabels.transcription_id
+        if not tid:
+            pytest.skip("no transcript")
+        r = requests.get(f"{API}/transcriptions")
+        assert r.status_code == 200
+        match = next((t for t in r.json() if t['id'] == tid), None)
+        assert match is not None, "transcript not found in list"
+        assert match.get('speaker_labels') == {"Speaker 1": "Alice", "Speaker 2": "Bob"}
+
+    def test_04_patch_speakers_overwrite(self):
+        tid = TestIteration3SpeakerLabels.transcription_id
+        if not tid:
+            pytest.skip("no transcript")
+        payload = {"speaker_labels": {"Speaker 1": "Charlie"}}
+        r = requests.patch(f"{API}/transcriptions/{tid}/speakers", json=payload, timeout=30)
+        assert r.status_code == 200
+        # Verify via GET that update overwrote
+        r = requests.get(f"{API}/transcriptions")
+        match = next((t for t in r.json() if t['id'] == tid), None)
+        assert match['speaker_labels'] == {"Speaker 1": "Charlie"}
+
+    def test_05_patch_speakers_404(self):
+        r = requests.patch(
+            f"{API}/transcriptions/nonexistent-xyz/speakers",
+            json={"speaker_labels": {"Speaker 1": "X"}}
+        )
+        assert r.status_code == 404
+
+    def test_99_cleanup(self):
+        if TestIteration3SpeakerLabels.transcription_id:
+            requests.delete(f"{API}/transcriptions/{TestIteration3SpeakerLabels.transcription_id}")
+
+
+class TestIteration3Chunk:
+    """Tests for POST /api/transcribe/chunk (streaming chunk transcription)"""
+
+    def test_01_chunk_small_returns_empty(self):
+        # < 1KB should return empty text gracefully
+        files = {'file': ('chunk.webm', b'\x00' * 500, 'audio/webm')}
+        r = requests.post(f"{API}/transcribe/chunk", files=files, timeout=30)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert 'text' in data
+        assert data['text'] == ''
+
+    def test_02_chunk_wav_returns_text_field(self):
+        # A real (silent) 1s wav, > 1KB
+        wav_bytes = _gen_wav_bytes(seconds=1)
+        files = {'file': ('chunk.wav', wav_bytes, 'audio/wav')}
+        r = requests.post(f"{API}/transcribe/chunk", files=files, timeout=60)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert 'text' in data
+        # text may be empty for tone audio - that's fine, but field must exist as string
+        assert isinstance(data['text'], str)
+
+    def test_03_chunk_unknown_ext_handled(self):
+        # Unknown extension falls back to webm
+        wav_bytes = _gen_wav_bytes(seconds=1)
+        files = {'file': ('chunk.xyz', wav_bytes, 'application/octet-stream')}
+        r = requests.post(f"{API}/transcribe/chunk", files=files, timeout=60)
+        # Endpoint never raises - returns {text: '', error: ...} on failure
+        assert r.status_code == 200
+        assert 'text' in r.json()

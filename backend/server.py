@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException
+from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -6,11 +6,12 @@ import os
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
-from typing import List, Optional
+from typing import List, Optional, Dict
 import uuid
 from datetime import datetime, timezone
 from emergentintegrations.llm.openai import OpenAISpeechToText
 import tempfile
+import requests
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -23,6 +24,72 @@ app = FastAPI()
 api_router = APIRouter(prefix="/api")
 
 stt = OpenAISpeechToText(api_key=os.getenv("EMERGENT_LLM_KEY"))
+
+# Object Storage Configuration
+STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
+EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY")
+APP_NAME = "speechflow"
+storage_key = None
+
+def init_storage():
+    global storage_key
+    if storage_key:
+        return storage_key
+    try:
+        resp = requests.post(f"{STORAGE_URL}/init", json={"emergent_key": EMERGENT_KEY}, timeout=30)
+        resp.raise_for_status()
+        storage_key = resp.json()["storage_key"]
+        return storage_key
+    except Exception as e:
+        logging.error(f"Storage init failed: {e}")
+        return None
+
+def put_object(path: str, data: bytes, content_type: str) -> dict:
+    key = init_storage()
+    if not key:
+        raise HTTPException(status_code=500, detail="Storage not available")
+    resp = requests.put(
+        f"{STORAGE_URL}/objects/{path}",
+        headers={"X-Storage-Key": key, "Content-Type": content_type},
+        data=data, timeout=120
+    )
+    if resp.status_code == 403:
+        # Re-init and retry once
+        global storage_key
+        storage_key = None
+        key = init_storage()
+        resp = requests.put(
+            f"{STORAGE_URL}/objects/{path}",
+            headers={"X-Storage-Key": key, "Content-Type": content_type},
+            data=data, timeout=120
+        )
+    resp.raise_for_status()
+    return resp.json()
+
+def get_object(path: str):
+    key = init_storage()
+    if not key:
+        raise HTTPException(status_code=500, detail="Storage not available")
+    resp = requests.get(
+        f"{STORAGE_URL}/objects/{path}",
+        headers={"X-Storage-Key": key}, timeout=60
+    )
+    if resp.status_code == 403:
+        global storage_key
+        storage_key = None
+        key = init_storage()
+        resp = requests.get(
+            f"{STORAGE_URL}/objects/{path}",
+            headers={"X-Storage-Key": key}, timeout=60
+        )
+    resp.raise_for_status()
+    return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
+
+MIME_MAP = {
+    "mp3": "audio/mpeg", "mp4": "audio/mp4", "mpeg": "audio/mpeg",
+    "mpga": "audio/mpeg", "m4a": "audio/mp4", "wav": "audio/wav",
+    "webm": "audio/webm"
+}
 
 class TranscriptionCreate(BaseModel):
     text: str
@@ -50,8 +117,11 @@ class Transcription(BaseModel):
     language: Optional[str] = None
     duration: Optional[float] = None
     filename: Optional[str] = None
+    audio_path: Optional[str] = None
+    audio_mime: Optional[str] = None
     segments: Optional[List[Segment]] = None
     words: Optional[List[Word]] = None
+    speaker_labels: Optional[Dict[str, str]] = None
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class DictionaryWord(BaseModel):
@@ -106,6 +176,16 @@ async def transcribe_file(file: UploadFile = File(...)):
             temp_file.write(content)
             temp_path = temp_file.name
         
+        # Upload to object storage
+        audio_path = None
+        audio_mime = MIME_MAP.get(file_ext, "audio/mpeg")
+        try:
+            storage_path = f"{APP_NAME}/audio/{uuid.uuid4()}.{file_ext}"
+            put_object(storage_path, content, audio_mime)
+            audio_path = storage_path
+        except Exception as storage_err:
+            logging.warning(f"Audio storage failed (continuing without): {storage_err}")
+        
         try:
             with open(temp_path, "rb") as audio_file:
                 response = await stt.transcribe(
@@ -139,6 +219,8 @@ async def transcribe_file(file: UploadFile = File(...)):
                 language=response.language if hasattr(response, 'language') else None,
                 duration=response.duration if hasattr(response, 'duration') else None,
                 filename=file.filename,
+                audio_path=audio_path,
+                audio_mime=audio_mime if audio_path else None,
                 segments=segments if segments else None,
                 words=words if words else None
             )
@@ -196,6 +278,69 @@ async def get_transcriptions():
             trans['timestamp'] = datetime.fromisoformat(trans['timestamp'])
     
     return transcriptions
+
+@api_router.get("/transcriptions/{transcription_id}/audio")
+async def get_audio(transcription_id: str):
+    trans = await db.transcriptions.find_one({"id": transcription_id}, {"_id": 0})
+    if not trans:
+        raise HTTPException(status_code=404, detail="Transcription not found")
+    if not trans.get("audio_path"):
+        raise HTTPException(status_code=404, detail="No audio available for this transcription")
+    
+    try:
+        data, content_type = get_object(trans["audio_path"])
+        return Response(
+            content=data,
+            media_type=trans.get("audio_mime") or content_type or "audio/mpeg",
+            headers={"Cache-Control": "public, max-age=31536000"}
+        )
+    except Exception as e:
+        logging.error(f"Audio fetch error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve audio")
+
+class SpeakerLabelsUpdate(BaseModel):
+    speaker_labels: Dict[str, str]
+
+@api_router.patch("/transcriptions/{transcription_id}/speakers")
+async def update_speaker_labels(transcription_id: str, update: SpeakerLabelsUpdate):
+    result = await db.transcriptions.update_one(
+        {"id": transcription_id},
+        {"$set": {"speaker_labels": update.speaker_labels}}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Transcription not found")
+    return {"message": "Speaker labels updated", "speaker_labels": update.speaker_labels}
+
+@api_router.post("/transcribe/chunk")
+async def transcribe_chunk(file: UploadFile = File(...)):
+    """Transcribe a small audio chunk for streaming/live transcription. Does not save to DB."""
+    try:
+        file_ext = (file.filename or "chunk.webm").split('.')[-1].lower()
+        if file_ext not in ['mp3', 'mp4', 'mpeg', 'mpga', 'm4a', 'wav', 'webm']:
+            file_ext = 'webm'
+        
+        content = await file.read()
+        if len(content) < 1000:
+            return {"text": ""}
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_ext}") as temp_file:
+            temp_file.write(content)
+            temp_path = temp_file.name
+        
+        try:
+            with open(temp_path, "rb") as audio_file:
+                response = await stt.transcribe(
+                    file=audio_file,
+                    model="whisper-1",
+                    response_format="json"
+                )
+            return {"text": response.text}
+        finally:
+            os.unlink(temp_path)
+    
+    except Exception as e:
+        logging.error(f"Chunk transcribe error: {str(e)}")
+        return {"text": "", "error": str(e)}
 
 @api_router.delete("/transcriptions/{transcription_id}")
 async def delete_transcription(transcription_id: str):
@@ -369,6 +514,14 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+@app.on_event("startup")
+async def startup_event():
+    try:
+        init_storage()
+        logger.info("Object storage initialized")
+    except Exception as e:
+        logger.warning(f"Storage init failed (will retry on use): {e}")
 
 @app.on_event("shutdown")
 async def shutdown_db_client():

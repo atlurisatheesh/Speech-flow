@@ -1,0 +1,53 @@
+{
+  "summary": "Iteration 3 (storage + speaker rename + streaming chunks) tested. Backend: 34/34 pytest passing (100%) - added 13 new tests across TestIteration3Storage (5), TestIteration3SpeakerLabels (6), TestIteration3Chunk (3). All new endpoints work: POST /transcribe/file returns audio_path, GET /transcriptions/{id}/audio returns audio bytes (verified 64044 bytes of audio/wav), PATCH /transcriptions/{id}/speakers updates and persists labels (404 cases work), POST /transcribe/chunk returns empty text for <1KB chunks and string text for larger ones. Frontend: 3 hero buttons (Record/Live/New-upload) present with correct data-testids; uploading a wav file produces an entry with 'AUDIO SAVED' indicator; audio player renders with src pointing to backend /api/transcriptions/{id}/audio and is fetchable (200, audio/wav, 64044 bytes); legacy transcripts without audio_path correctly hide both the indicator and the player. Diarize ran successfully this iteration (multi-segment dialogue + monologue both passed) - prior budget-cap issue from iter 2 is resolved. Speaker rename UI flow could not be fully exercised because the only available test audio is a 2s 440Hz tone that Whisper returns without segments, so the Identify Speakers button stays disabled (same as iter 2 - expected behavior). Live mic recording can't be tested in headless browser, but the start-live-recording-button is present.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "GET /api/transcriptions/{id}/audio",
+        "issue": "Backend sets Cache-Control: public, max-age=31536000 but k8s/cloudflare ingress rewrites it to 'no-store, no-cache, must-revalidate'. Audio body and Content-Type are correct so browser playback works, but caching benefits are lost. Infra issue, not code."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "AudioPlayer",
+        "issues": ["data-testid='audio-player' is placed on the wrapper <div>, not the inner <audio> element. Selecting it via Playwright .src returns null because divs don't have src. Recommend moving the testid to the <audio> tag itself (AudioPlayer.jsx line 72) OR adding a separate data-testid='audio-element' on the <audio>."]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: Move data-testid='audio-player' from wrapper div to inner <audio> element (or add a second testid) so tests can read .src/.currentTime directly.",
+    "OPTIONAL: Speaker rename UI flow cannot be exercised end-to-end with the existing short-tone test audio. To enable manual QA, seed a transcript with realistic multi-speaker segments + speaker assignments. Backend PATCH /speakers is fully tested and proven correct.",
+    "OPTIONAL: Hero subtitle still overlaps red waveform image at the densest band (carried over from iter 2). Consider increasing the white backdrop opacity to 60-70% or repositioning the waveform image."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now 528 lines - consider splitting into routers (transcribe, storage, dictionary, export) before next feature iteration.",
+    "init_storage() uses a module-global storage_key with mutable state and a 403-retry pattern duplicated in put_object/get_object - could be DRY'd into a small _request_with_retry helper.",
+    "POST /transcribe/chunk silently swallows exceptions and returns {text:'', error: str(e)} with HTTP 200. While intentional for streaming, this hides backend errors from the frontend. Consider at least logging stack traces (currently only message) and emitting a 200 with explicit error code so the frontend can differentiate 'silent audio' from 'whisper failed'.",
+    "transcribe_file uploads audio to object storage BEFORE running transcription. If transcription fails, the orphaned audio object remains in storage (no cleanup). Consider rollback or background cleanup.",
+    "PATCH /speakers takes Dict[str,str] but does not validate keys (e.g., 'Speaker 1' format). Malicious or accidental arbitrary keys would be stored. Consider adding a regex validator.",
+    "AudioPlayer.jsx places data-testid='audio-player' on wrapper div, hiding the actual <audio> element from automated testing.",
+    "Lazy imports inside endpoint handlers (LlmChat, json, re) - should be moved to module top."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (added TestIteration3Storage with 5 tests, TestIteration3SpeakerLabels with 6 tests, TestIteration3Chunk with 3 tests)"
+  ],
+  "success_rate": {
+    "backend": "100% (34/34 pytest)",
+    "frontend": "100% on testable surface area (3 hero buttons, AUDIO SAVED indicator, audio player + backend URL, legacy fallback). Speaker rename UI and live recording UI not testable in headless without seed data / mic permission - backend APIs they call are fully validated."
+  },
+  "test_credentials": "N/A - public app",
+  "seed_data_creation": "Tests create ephemeral 2-3s 440Hz WAV files in-memory and delete the transcription on teardown. One manual UI upload (iter3_ui_test.wav) was left in DB - main agent may keep or delete via UI/API.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend is fully covered by /app/backend/tests/backend_test.py (34 tests, ~22s runtime). Run with: REACT_APP_BACKEND_URL=<url> pytest /app/backend/tests/backend_test.py -v. Object storage is live and returns audio with correct mime type. Note that the k8s ingress strips the backend's Cache-Control header. To test the Speaker rename UI end-to-end, you need a transcript that has segments AND has been diarized - upload a real multi-speaker recording (not a tone) and click 'Identify Speakers' before the rename UI becomes available. The data-testid for audio-player is on a wrapper div, not the <audio> element - use 'document.querySelector(\"[data-testid=audio-player] audio\")' in JS or query the inner element to read .src.",
+  "rca of the issue": "No critical issues found. All iter-3 features (object storage, speaker rename, streaming chunks) work end-to-end. The only minor concerns are (a) the testid placement on AudioPlayer wrapper div instead of the audio element, and (b) the k8s ingress overriding Cache-Control for the audio endpoint. Neither affects functional correctness."
+}
