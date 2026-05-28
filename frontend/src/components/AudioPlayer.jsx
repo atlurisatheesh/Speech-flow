@@ -69,7 +69,7 @@ const AudioPlayer = forwardRef(({ audioUrl, onTimeUpdate }, ref) => {
       className="flex items-center gap-3 bg-white border border-[#E4E4E7] rounded-sm p-3"
       data-testid="audio-player"
     >
-      <audio ref={audioRef} src={audioUrl} preload="metadata" />
+      <audio ref={audioRef} src={audioUrl} preload="metadata" data-testid="audio-element" />
       <Button
         onClick={togglePlay}
         size="sm"

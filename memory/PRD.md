@@ -25,26 +25,27 @@ Build a tool like Whisper Flow (https://wisprflow.ai/) but even more accurate. S
 6. Copy/download functionality
 
 ## What's Been Implemented (Feb 2026)
-- ✅ POST /api/transcribe/file - Audio file upload & transcription with segments+words timestamps
+- ✅ POST /api/transcribe/file - Uploads audio to object storage, returns audio_path
+- ✅ GET /api/transcriptions/{id}/audio - Serves stored audio for persistent playback
+- ✅ PATCH /api/transcriptions/{id}/speakers - Update speaker labels (e.g. Speaker 1 → Alice)
+- ✅ POST /api/transcribe/chunk - Streaming/live chunk transcription (no DB save)
 - ✅ POST /api/transcribe/process - AI text enhancement
-- ✅ POST /api/transcribe/diarize - AI speaker diarization (compact prompt for budget)
+- ✅ POST /api/transcribe/diarize - AI speaker diarization
 - ✅ GET /api/transcriptions/{id}/export/{format} - SRT/VTT/TXT export
-- ✅ GET/DELETE /api/transcriptions - History management
-- ✅ POST/GET/DELETE /api/dictionary - Personal dictionary
-- ✅ MicRecorder component - Browser MediaRecorder API with live audio level visualization
-- ✅ AudioPlayer component - Play/pause/seek with timestamp display
-- ✅ Click-to-seek interactive segments view with active highlighting
-- ✅ Identify Speakers button (diarization)
-- ✅ Export dropdown menu (TXT, SRT, VTT)
-- ✅ All 20 backend tests passing (100%)
+- ✅ MicRecorder with Record + Live mode buttons (live streams chunks every 5s)
+- ✅ AudioPlayer with persistent backend URL (loads stored audio for historical transcripts)
+- ✅ Speaker rename panel with inline edit (click pencil, type name, save)
+- ✅ Live transcription preview box during streaming mode
+- ✅ "● AUDIO SAVED" indicator on transcripts with stored audio
+- ✅ All 34 backend tests passing (100%)
 
 ## Prioritized Backlog (P0/P1/P2)
-- **P1**: Object storage for audio files (so historical transcripts can be replayed)
-- **P2**: Word-level click-to-seek (within segments)
-- **P2**: Streaming/real-time transcription (chunk audio while recording)
-- **P2**: Speaker label editing (rename "Speaker 1" → "Alice")
-- **P2**: User authentication & multi-user support
-- **P2**: Team collaboration features
+- **P1**: User authentication & multi-user support
+- **P2**: Refactor server.py into routers (transcribe/storage/dictionary)
+- **P2**: Stripe-based subscriptions (Free/Pro/Team tiers)
+- **P2**: Stream WebSocket for true real-time (vs 5s chunks)
+- **P2**: Audio cleanup on transcription failure (rollback orphans)
+- **P2**: Team collaboration features (shared workspaces)
 
 ## Next Tasks
 - Add real-time browser-based audio recording
