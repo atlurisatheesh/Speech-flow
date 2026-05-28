@@ -213,20 +213,20 @@ async def diarize_transcript(request: DiarizeRequest):
         chat = LlmChat(
             api_key=os.getenv("EMERGENT_LLM_KEY"),
             session_id=str(uuid.uuid4()),
-            system_message="You are an expert at speaker diarization. Analyze conversational text and identify distinct speakers based on context, dialogue patterns, and content. Return ONLY a JSON array."
-        ).with_model("openai", "gpt-4o-mini").with_params(temperature=0.2)
+            system_message="Speaker diarization. Return ONLY JSON."
+        ).with_model("openai", "gpt-4o-mini").with_params(temperature=0.0)
         
-        segments_list = [{"index": i, "text": seg.text} for i, seg in enumerate(request.segments)]
+        # Compact prompt - use indices only, shorter text
+        lines = []
+        for i, seg in enumerate(request.segments):
+            # Truncate long segments to save tokens
+            text = seg.text.strip()[:120]
+            lines.append(f"{i}: {text}")
         
-        prompt = f"""Analyze these transcript segments and assign a speaker label (Speaker 1, Speaker 2, etc.) to each based on context, dialogue patterns, and content shifts.
+        prompt = f"""Label each line with speaker (S1, S2, ...). Same speaker if continuous dialogue. JSON only:
+[{{"i":0,"s":"S1"}},...]
 
-Segments:
-{json_lib.dumps(segments_list, indent=2)}
-
-Return ONLY a valid JSON array with this exact format (no markdown, no explanation):
-[{{"index": 0, "speaker": "Speaker 1"}}, {{"index": 1, "speaker": "Speaker 2"}}, ...]
-
-Every segment must have a speaker assignment. If the audio appears to be a single speaker (monologue), label all as "Speaker 1"."""
+{chr(10).join(lines)}"""
         
         response = await chat.send_message(UserMessage(text=prompt))
         response_text = response if isinstance(response, str) else response.message.text
@@ -239,11 +239,28 @@ Every segment must have a speaker assignment. If the audio appears to be a singl
                 response_text = response_text[4:]
             response_text = response_text.strip()
         
-        speaker_assignments = json_lib.loads(response_text)
+        try:
+            speaker_assignments = json_lib.loads(response_text)
+        except json_lib.JSONDecodeError:
+            # Fallback - try to find JSON array in response
+            import re as re_module
+            match = re_module.search(r'\[.*\]', response_text, re_module.DOTALL)
+            if match:
+                speaker_assignments = json_lib.loads(match.group(0))
+            else:
+                raise HTTPException(status_code=500, detail="Could not parse speaker assignments")
         
-        # Apply assignments
+        # Build speaker map - handle both compact (i/s) and full (index/speaker) formats
+        speaker_map = {}
+        for item in speaker_assignments:
+            idx = item.get("i", item.get("index"))
+            speaker_label = item.get("s", item.get("speaker", "Speaker 1"))
+            # Normalize S1 -> Speaker 1
+            if speaker_label.startswith("S") and speaker_label[1:].isdigit():
+                speaker_label = f"Speaker {speaker_label[1:]}"
+            speaker_map[idx] = speaker_label
+        
         result_segments = []
-        speaker_map = {item["index"]: item["speaker"] for item in speaker_assignments}
         for i, seg in enumerate(request.segments):
             result_segments.append({
                 "start": seg.start,
@@ -254,6 +271,8 @@ Every segment must have a speaker assignment. If the audio appears to be a singl
         
         return {"segments": result_segments}
     
+    except HTTPException:
+        raise
     except Exception as e:
         logging.error(f"Diarization error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Diarization failed: {str(e)}")

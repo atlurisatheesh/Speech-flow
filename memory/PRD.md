@@ -25,23 +25,24 @@ Build a tool like Whisper Flow (https://wisprflow.ai/) but even more accurate. S
 6. Copy/download functionality
 
 ## What's Been Implemented (Feb 2026)
-- ✅ POST /api/transcribe/file - Audio file upload & transcription
+- ✅ POST /api/transcribe/file - Audio file upload & transcription with segments+words timestamps
 - ✅ POST /api/transcribe/process - AI text enhancement
+- ✅ POST /api/transcribe/diarize - AI speaker diarization (compact prompt for budget)
+- ✅ GET /api/transcriptions/{id}/export/{format} - SRT/VTT/TXT export
 - ✅ GET/DELETE /api/transcriptions - History management
 - ✅ POST/GET/DELETE /api/dictionary - Personal dictionary
-- ✅ Split-pane UI with sidebar (history/dictionary) + editor
-- ✅ Hero section with file upload
-- ✅ Real-time loading states
-- ✅ Copy/download transcript actions
-- ✅ AI Enhance toggle with original/enhanced comparison
-- ✅ All 11 backend tests passing
+- ✅ MicRecorder component - Browser MediaRecorder API with live audio level visualization
+- ✅ AudioPlayer component - Play/pause/seek with timestamp display
+- ✅ Click-to-seek interactive segments view with active highlighting
+- ✅ Identify Speakers button (diarization)
+- ✅ Export dropdown menu (TXT, SRT, VTT)
+- ✅ All 20 backend tests passing (100%)
 
 ## Prioritized Backlog (P0/P1/P2)
-- **P1**: Real-time microphone recording (browser MediaRecorder API)
-- **P1**: Audio playback with synced highlighting
-- **P2**: Export to multiple formats (SRT, VTT, PDF)
-- **P2**: Speaker diarization for multi-speaker audio
-- **P2**: Snippet library (voice shortcuts)
+- **P1**: Object storage for audio files (so historical transcripts can be replayed)
+- **P2**: Word-level click-to-seek (within segments)
+- **P2**: Streaming/real-time transcription (chunk audio while recording)
+- **P2**: Speaker label editing (rename "Speaker 1" → "Alice")
 - **P2**: User authentication & multi-user support
 - **P2**: Team collaboration features
 

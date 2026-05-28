@@ -114,7 +114,7 @@ const EditorPane = ({
             backgroundPosition: 'center'
           }}
         >
-          <div className="absolute inset-0 bg-white/40 backdrop-blur-[2px]"></div>
+          <div className="absolute inset-0 bg-white/65 backdrop-blur-[2px]"></div>
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
