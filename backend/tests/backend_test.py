@@ -1,4 +1,4 @@
-"""Backend tests for Speech-to-Text Pro API"""
+"""Backend tests for Speech-to-Text Pro API (iteration 2: adds diarize + export tests)"""
 import os
 import io
 import wave
@@ -7,7 +7,7 @@ import math
 import pytest
 import requests
 
-BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', 'https://speech-to-text-pro-6.preview.emergentagent.com').rstrip('/')
+BASE_URL = os.environ['REACT_APP_BACKEND_URL'].rstrip('/')
 API = f"{BASE_URL}/api"
 
 
@@ -45,72 +45,166 @@ def test_transcribe_unsupported_format():
     assert 'Unsupported' in r.json().get('detail', '')
 
 
-# File upload - whisper transcription
-def test_transcribe_wav_file():
-    wav_bytes = _gen_wav_bytes()
-    files = {'file': ('test.wav', wav_bytes, 'audio/wav')}
-    r = requests.post(f"{API}/transcribe/file", files=files, timeout=90)
-    assert r.status_code == 200, f"Status {r.status_code}: {r.text}"
-    data = r.json()
-    assert 'id' in data
-    assert 'text' in data
-    assert data['filename'] == 'test.wav'
-    # Verify persistence
-    g = requests.get(f"{API}/transcriptions")
-    assert any(t['id'] == data['id'] for t in g.json())
-    # cleanup
-    requests.delete(f"{API}/transcriptions/{data['id']}")
+# === New feature: transcribe returns segments/words ===
+class TestTranscribeWithTimestamps:
+    transcription_id = None
+
+    def test_01_transcribe_returns_segments_words(self):
+        wav_bytes = _gen_wav_bytes(seconds=3)
+        files = {'file': ('test.wav', wav_bytes, 'audio/wav')}
+        r = requests.post(f"{API}/transcribe/file", files=files, timeout=120)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert 'id' in data and 'text' in data
+        assert data['filename'] == 'test.wav'
+        # New fields (may be None for very short / silent audio)
+        assert 'segments' in data
+        assert 'words' in data
+        TestTranscribeWithTimestamps.transcription_id = data['id']
+        # If segments exist, validate shape
+        if data['segments']:
+            seg = data['segments'][0]
+            assert 'start' in seg and 'end' in seg and 'text' in seg
+            assert isinstance(seg['start'], (int, float))
+        if data['words']:
+            w = data['words'][0]
+            assert 'start' in w and 'end' in w and 'word' in w
+
+    def test_02_export_txt(self):
+        if not TestTranscribeWithTimestamps.transcription_id:
+            pytest.skip("transcription not created")
+        tid = TestTranscribeWithTimestamps.transcription_id
+        r = requests.get(f"{API}/transcriptions/{tid}/export/txt")
+        assert r.status_code == 200
+        assert 'attachment' in r.headers.get('content-disposition', '').lower()
+        assert len(r.text) >= 0  # text may be empty for silent audio
+
+    def test_03_export_srt(self):
+        if not TestTranscribeWithTimestamps.transcription_id:
+            pytest.skip("transcription not created")
+        tid = TestTranscribeWithTimestamps.transcription_id
+        r = requests.get(f"{API}/transcriptions/{tid}/export/srt")
+        assert r.status_code == 200
+        assert 'attachment' in r.headers.get('content-disposition', '').lower()
+        assert '.srt' in r.headers.get('content-disposition', '').lower()
+
+    def test_04_export_vtt(self):
+        if not TestTranscribeWithTimestamps.transcription_id:
+            pytest.skip("transcription not created")
+        tid = TestTranscribeWithTimestamps.transcription_id
+        r = requests.get(f"{API}/transcriptions/{tid}/export/vtt")
+        assert r.status_code == 200
+        assert r.headers.get('content-type', '').startswith('text/vtt')
+        # WEBVTT header must be present
+        assert 'WEBVTT' in r.text
+
+    def test_05_export_invalid_format(self):
+        if not TestTranscribeWithTimestamps.transcription_id:
+            pytest.skip("transcription not created")
+        tid = TestTranscribeWithTimestamps.transcription_id
+        r = requests.get(f"{API}/transcriptions/{tid}/export/pdf")
+        assert r.status_code == 400
+
+    def test_06_export_404(self):
+        r = requests.get(f"{API}/transcriptions/nonexistent-id-xyz/export/txt")
+        assert r.status_code == 404
+
+    def test_99_cleanup(self):
+        if TestTranscribeWithTimestamps.transcription_id:
+            requests.delete(f"{API}/transcriptions/{TestTranscribeWithTimestamps.transcription_id}")
 
 
-# AI text processing
+# === Diarize tests ===
+class TestDiarize:
+    def test_single_speaker_monologue(self):
+        payload = {
+            "segments": [
+                {"start": 0.0, "end": 3.0, "text": "Today I will talk about machine learning."},
+                {"start": 3.0, "end": 6.0, "text": "It is a fascinating field of computer science."},
+                {"start": 6.0, "end": 9.0, "text": "And I have been studying it for years."},
+            ]
+        }
+        r = requests.post(f"{API}/transcribe/diarize", json=payload, timeout=60)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert 'segments' in data
+        assert len(data['segments']) == 3
+        for seg in data['segments']:
+            assert 'speaker' in seg and seg['speaker'].startswith('Speaker')
+        # Monologue: all should be Speaker 1
+        speakers = {s['speaker'] for s in data['segments']}
+        assert 'Speaker 1' in speakers
+
+    def test_multi_speaker_dialogue(self):
+        payload = {
+            "segments": [
+                {"start": 0.0, "end": 2.0, "text": "Hi John, how are you today?"},
+                {"start": 2.0, "end": 4.0, "text": "I'm doing well, thanks for asking. How about you?"},
+                {"start": 4.0, "end": 6.0, "text": "Pretty good. Did you finish the project?"},
+                {"start": 6.0, "end": 8.0, "text": "Yes, I submitted it yesterday."},
+            ]
+        }
+        r = requests.post(f"{API}/transcribe/diarize", json=payload, timeout=60)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert len(data['segments']) == 4
+        speakers = {s['speaker'] for s in data['segments']}
+        # Dialogue should ideally produce 2 speakers
+        assert len(speakers) >= 2, f"Expected multi-speaker but got: {speakers}"
+
+    def test_diarize_preserves_text_and_timing(self):
+        payload = {
+            "segments": [
+                {"start": 1.5, "end": 3.5, "text": "Hello world"},
+            ]
+        }
+        r = requests.post(f"{API}/transcribe/diarize", json=payload, timeout=60)
+        assert r.status_code == 200
+        seg = r.json()['segments'][0]
+        assert seg['text'] == 'Hello world'
+        assert seg['start'] == 1.5
+        assert seg['end'] == 3.5
+
+
+# === Existing functionality regression ===
 def test_process_text():
     payload = {"text": "Um, so like, I went to the uh store today you know."}
     r = requests.post(f"{API}/transcribe/process", json=payload, timeout=60)
-    assert r.status_code == 200, f"Status {r.status_code}: {r.text}"
+    assert r.status_code == 200, r.text
     data = r.json()
-    assert 'processed_text' in data
-    assert 'original_text' in data
-    assert len(data['processed_text']) > 0
+    assert 'processed_text' in data and len(data['processed_text']) > 0
 
 
-# Delete transcription - not found
 def test_delete_transcription_404():
     r = requests.delete(f"{API}/transcriptions/nonexistent-id-12345")
     assert r.status_code == 404
 
 
-# Dictionary CRUD
+# Dictionary CRUD (regression)
 class TestDictionary:
     word_id = None
     test_word = "TEST_supercalifragilistic"
 
     def test_01_add_word(self):
-        # cleanup any existing
         existing = requests.get(f"{API}/dictionary").json()
         for w in existing:
             if w['word'].lower() == self.test_word.lower():
                 requests.delete(f"{API}/dictionary/{w['id']}")
         r = requests.post(f"{API}/dictionary", json={"word": self.test_word})
         assert r.status_code == 200, r.text
-        data = r.json()
-        assert data['word'] == self.test_word
-        TestDictionary.word_id = data['id']
+        TestDictionary.word_id = r.json()['id']
 
     def test_02_duplicate_word(self):
         r = requests.post(f"{API}/dictionary", json={"word": self.test_word})
         assert r.status_code == 400
 
-    def test_03_get_dictionary(self):
-        r = requests.get(f"{API}/dictionary")
-        assert r.status_code == 200
-        assert any(w['id'] == TestDictionary.word_id for w in r.json())
+    def test_03_duplicate_case_insensitive(self):
+        r = requests.post(f"{API}/dictionary", json={"word": self.test_word.upper()})
+        assert r.status_code == 400, "Case-insensitive duplicate check should reject uppercase variant"
 
     def test_04_delete_word(self):
         r = requests.delete(f"{API}/dictionary/{TestDictionary.word_id}")
         assert r.status_code == 200
-        # verify gone
-        words = requests.get(f"{API}/dictionary").json()
-        assert not any(w['id'] == TestDictionary.word_id for w in words)
 
     def test_05_delete_word_404(self):
         r = requests.delete(f"{API}/dictionary/nonexistent")

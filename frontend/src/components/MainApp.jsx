@@ -11,6 +11,7 @@ const MainApp = () => {
   const [transcriptions, setTranscriptions] = useState([]);
   const [dictionary, setDictionary] = useState([]);
   const [currentTranscript, setCurrentTranscript] = useState(null);
+  const [currentAudioUrl, setCurrentAudioUrl] = useState(null);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -36,8 +37,14 @@ const MainApp = () => {
     }
   };
 
-  const handleTranscribe = async (file) => {
+  const handleTranscribe = async (file, audioBlob = null) => {
     setLoading(true);
+
+    // Set audio URL for playback (use blob for recordings, file for uploads)
+    const blob = audioBlob || file;
+    const audioUrl = URL.createObjectURL(blob);
+    setCurrentAudioUrl(audioUrl);
+
     const formData = new FormData();
     formData.append('file', file);
 
@@ -67,12 +74,47 @@ const MainApp = () => {
     }
   };
 
+  const handleDiarize = async (segments) => {
+    try {
+      const response = await axios.post(`${API}/transcribe/diarize`, { segments });
+      return response.data.segments;
+    } catch (error) {
+      toast.error('Failed to identify speakers');
+      throw error;
+    }
+  };
+
+  const handleExport = async (transcriptId, format) => {
+    try {
+      const response = await axios.get(
+        `${API}/transcriptions/${transcriptId}/export/${format}`,
+        { responseType: 'blob' }
+      );
+      const blob = new Blob([response.data]);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `transcript-${Date.now()}.${format}`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success(`Exported as ${format.toUpperCase()}!`);
+    } catch (error) {
+      toast.error(`Failed to export as ${format.toUpperCase()}`);
+    }
+  };
+
+  const handleSelectTranscript = (trans) => {
+    setCurrentTranscript(trans);
+    setCurrentAudioUrl(null); // Audio not available for historical transcripts
+  };
+
   const handleDeleteTranscript = async (id) => {
     try {
       await axios.delete(`${API}/transcriptions/${id}`);
       setTranscriptions(transcriptions.filter(t => t.id !== id));
       if (currentTranscript?.id === id) {
         setCurrentTranscript(null);
+        setCurrentAudioUrl(null);
       }
       toast.success('Transcript deleted');
     } catch (error) {
@@ -105,7 +147,7 @@ const MainApp = () => {
       <Sidebar
         transcriptions={transcriptions}
         dictionary={dictionary}
-        onSelectTranscript={setCurrentTranscript}
+        onSelectTranscript={handleSelectTranscript}
         onDeleteTranscript={handleDeleteTranscript}
         onAddWord={handleAddWord}
         onDeleteWord={handleDeleteWord}
@@ -113,8 +155,11 @@ const MainApp = () => {
       />
       <EditorPane
         transcript={currentTranscript}
+        audioUrl={currentAudioUrl}
         onTranscribe={handleTranscribe}
         onProcessText={handleProcessText}
+        onDiarize={handleDiarize}
+        onExport={handleExport}
         loading={loading}
       />
       <Toaster position="top-right" richColors />

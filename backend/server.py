@@ -30,6 +30,17 @@ class TranscriptionCreate(BaseModel):
     duration: Optional[float] = None
     filename: Optional[str] = None
 
+class Segment(BaseModel):
+    start: float
+    end: float
+    text: str
+    speaker: Optional[str] = None
+
+class Word(BaseModel):
+    start: float
+    end: float
+    word: str
+
 class Transcription(BaseModel):
     model_config = ConfigDict(extra="ignore")
     
@@ -39,6 +50,8 @@ class Transcription(BaseModel):
     language: Optional[str] = None
     duration: Optional[float] = None
     filename: Optional[str] = None
+    segments: Optional[List[Segment]] = None
+    words: Optional[List[Word]] = None
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class DictionaryWord(BaseModel):
@@ -53,6 +66,23 @@ class DictionaryWordCreate(BaseModel):
 
 class ProcessTextRequest(BaseModel):
     text: str
+
+class DiarizeRequest(BaseModel):
+    segments: List[Segment]
+
+def format_srt_time(seconds: float) -> str:
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = int(seconds % 60)
+    ms = int((seconds - int(seconds)) * 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+def format_vtt_time(seconds: float) -> str:
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = int(seconds % 60)
+    ms = int((seconds - int(seconds)) * 1000)
+    return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
 
 @api_router.get("/")
 async def root():
@@ -82,15 +112,35 @@ async def transcribe_file(file: UploadFile = File(...)):
                     file=audio_file,
                     model="whisper-1",
                     response_format="verbose_json",
-                    timestamp_granularities=["segment"]
+                    timestamp_granularities=["segment", "word"]
                 )
+            
+            segments = []
+            if hasattr(response, 'segments') and response.segments:
+                for seg in response.segments:
+                    segments.append(Segment(
+                        start=seg.start if hasattr(seg, 'start') else seg.get('start', 0),
+                        end=seg.end if hasattr(seg, 'end') else seg.get('end', 0),
+                        text=seg.text if hasattr(seg, 'text') else seg.get('text', '')
+                    ))
+            
+            words = []
+            if hasattr(response, 'words') and response.words:
+                for w in response.words:
+                    words.append(Word(
+                        start=w.start if hasattr(w, 'start') else w.get('start', 0),
+                        end=w.end if hasattr(w, 'end') else w.get('end', 0),
+                        word=w.word if hasattr(w, 'word') else w.get('word', '')
+                    ))
             
             transcription_obj = Transcription(
                 text=response.text,
                 original_text=response.text,
                 language=response.language if hasattr(response, 'language') else None,
                 duration=response.duration if hasattr(response, 'duration') else None,
-                filename=file.filename
+                filename=file.filename,
+                segments=segments if segments else None,
+                words=words if words else None
             )
             
             doc = transcription_obj.model_dump()
@@ -153,6 +203,103 @@ async def delete_transcription(transcription_id: str):
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Transcription not found")
     return {"message": "Transcription deleted successfully"}
+
+@api_router.post("/transcribe/diarize")
+async def diarize_transcript(request: DiarizeRequest):
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        import json as json_lib
+        
+        chat = LlmChat(
+            api_key=os.getenv("EMERGENT_LLM_KEY"),
+            session_id=str(uuid.uuid4()),
+            system_message="You are an expert at speaker diarization. Analyze conversational text and identify distinct speakers based on context, dialogue patterns, and content. Return ONLY a JSON array."
+        ).with_model("openai", "gpt-4o-mini").with_params(temperature=0.2)
+        
+        segments_list = [{"index": i, "text": seg.text} for i, seg in enumerate(request.segments)]
+        
+        prompt = f"""Analyze these transcript segments and assign a speaker label (Speaker 1, Speaker 2, etc.) to each based on context, dialogue patterns, and content shifts.
+
+Segments:
+{json_lib.dumps(segments_list, indent=2)}
+
+Return ONLY a valid JSON array with this exact format (no markdown, no explanation):
+[{{"index": 0, "speaker": "Speaker 1"}}, {{"index": 1, "speaker": "Speaker 2"}}, ...]
+
+Every segment must have a speaker assignment. If the audio appears to be a single speaker (monologue), label all as "Speaker 1"."""
+        
+        response = await chat.send_message(UserMessage(text=prompt))
+        response_text = response if isinstance(response, str) else response.message.text
+        
+        # Extract JSON
+        response_text = response_text.strip()
+        if response_text.startswith("```"):
+            response_text = response_text.split("```")[1]
+            if response_text.startswith("json"):
+                response_text = response_text[4:]
+            response_text = response_text.strip()
+        
+        speaker_assignments = json_lib.loads(response_text)
+        
+        # Apply assignments
+        result_segments = []
+        speaker_map = {item["index"]: item["speaker"] for item in speaker_assignments}
+        for i, seg in enumerate(request.segments):
+            result_segments.append({
+                "start": seg.start,
+                "end": seg.end,
+                "text": seg.text,
+                "speaker": speaker_map.get(i, "Speaker 1")
+            })
+        
+        return {"segments": result_segments}
+    
+    except Exception as e:
+        logging.error(f"Diarization error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Diarization failed: {str(e)}")
+
+@api_router.get("/transcriptions/{transcription_id}/export/{format}")
+async def export_transcript(transcription_id: str, format: str):
+    if format not in ["srt", "vtt", "txt"]:
+        raise HTTPException(status_code=400, detail="Format must be srt, vtt, or txt")
+    
+    trans = await db.transcriptions.find_one({"id": transcription_id}, {"_id": 0})
+    if not trans:
+        raise HTTPException(status_code=404, detail="Transcription not found")
+    
+    from fastapi.responses import Response
+    
+    if format == "txt":
+        content = trans.get("text", "")
+        media_type = "text/plain"
+        ext = "txt"
+    elif format == "srt":
+        segments = trans.get("segments") or []
+        lines = []
+        for i, seg in enumerate(segments, 1):
+            speaker = seg.get("speaker", "")
+            text = f"{speaker}: {seg['text'].strip()}" if speaker else seg['text'].strip()
+            lines.append(f"{i}\n{format_srt_time(seg['start'])} --> {format_srt_time(seg['end'])}\n{text}\n")
+        content = "\n".join(lines) if lines else trans.get("text", "")
+        media_type = "text/plain"
+        ext = "srt"
+    else:  # vtt
+        segments = trans.get("segments") or []
+        lines = ["WEBVTT", ""]
+        for seg in segments:
+            speaker = seg.get("speaker", "")
+            text = f"{speaker}: {seg['text'].strip()}" if speaker else seg['text'].strip()
+            lines.append(f"{format_vtt_time(seg['start'])} --> {format_vtt_time(seg['end'])}\n{text}\n")
+        content = "\n".join(lines) if len(lines) > 2 else "WEBVTT\n\n" + trans.get("text", "")
+        media_type = "text/vtt"
+        ext = "vtt"
+    
+    filename = (trans.get("filename") or "transcript").rsplit(".", 1)[0]
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}.{ext}"'}
+    )
 
 @api_router.post("/dictionary", response_model=DictionaryWord)
 async def add_dictionary_word(input: DictionaryWordCreate):
