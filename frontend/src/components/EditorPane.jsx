@@ -59,18 +59,19 @@ const EditorPane = ({ transcript, onTranscribe, onProcessText, loading }) => {
       {/* Hero Section */}
       {!transcript && (
         <div 
-          className="flex-1 flex flex-col items-center justify-center px-8"
+          className="flex-1 flex flex-col items-center justify-center px-8 relative"
           style={{
             backgroundImage: 'url(https://static.prod-images.emergentagent.com/jobs/0a532f4d-fffc-4e94-9a3a-681b67b54330/images/f4bf8d280a193b6baadb8c0ccac52d556e2a05bbbc3ba2961091a1d119ef0d60.png)',
             backgroundSize: 'cover',
             backgroundPosition: 'center'
           }}
         >
+          <div className="absolute inset-0 bg-white/40 backdrop-blur-[2px]"></div>
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5 }}
-            className="text-center max-w-3xl"
+            className="text-center max-w-3xl relative z-10"
           >
             <h1 
               className="text-4xl sm:text-5xl lg:text-6xl font-black tracking-tighter leading-none text-[#0A0A0B] mb-4"
@@ -81,7 +82,7 @@ const EditorPane = ({ transcript, onTranscribe, onProcessText, loading }) => {
               <br />
               Into Perfect Text
             </h1>
-            <p className="text-base sm:text-lg text-[#52525B] mb-8 leading-relaxed max-w-2xl mx-auto">
+            <p className="text-base sm:text-lg text-[#0A0A0B] font-medium mb-8 leading-relaxed max-w-2xl mx-auto">
               AI-powered transcription with automatic grammar correction, filler word removal,
               and support for 100+ languages. More accurate than ever.
             </p>
@@ -98,14 +99,14 @@ const EditorPane = ({ transcript, onTranscribe, onProcessText, loading }) => {
             <Button
               onClick={() => fileInputRef.current?.click()}
               size="lg"
-              className="bg-[#002FA7] hover:bg-[#002FA7]/90 text-white px-8 py-6 text-base font-semibold rounded-sm transition-colors duration-200"
+              className="bg-[#002FA7] hover:bg-[#002FA7]/90 text-white px-8 py-6 text-base font-semibold rounded-sm transition-colors duration-200 shadow-lg"
               data-testid="upload-button"
             >
               <Upload className="w-5 h-5 mr-2" />
               Upload Audio File
             </Button>
 
-            <p className="text-xs text-[#A1A1AA] mt-4 uppercase tracking-[0.2em] font-semibold">
+            <p className="text-xs text-[#0A0A0B] mt-4 uppercase tracking-[0.2em] font-bold bg-white/80 backdrop-blur-sm inline-block px-4 py-2 rounded-sm">
               Supports MP3, WAV, M4A, WEBM • Max 25MB
             </p>
           </motion.div>

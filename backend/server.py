@@ -101,6 +101,8 @@ async def transcribe_file(file: UploadFile = File(...)):
         finally:
             os.unlink(temp_path)
     
+    except HTTPException:
+        raise
     except Exception as e:
         logging.error(f"Transcription error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
@@ -108,30 +110,26 @@ async def transcribe_file(file: UploadFile = File(...)):
 @api_router.post("/transcribe/process")
 async def process_text(request: ProcessTextRequest):
     try:
-        from emergentintegrations.llm.openai import OpenAIChat
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
         
-        chat = OpenAIChat(api_key=os.getenv("EMERGENT_LLM_KEY"))
+        chat = LlmChat(
+            api_key=os.getenv("EMERGENT_LLM_KEY"),
+            session_id=str(uuid.uuid4()),
+            system_message="You are a text editor that improves transcribed speech by removing filler words, fixing grammar and punctuation, and making sentences clear and professional while maintaining the original meaning."
+        ).with_model("openai", "gpt-4o-mini").with_params(temperature=0.3)
         
-        prompt = f"""You are a text editor that improves transcribed speech. 
-
-Task: Clean up this transcribed text by:
-1. Removing filler words (um, uh, like, you know, etc.)
-2. Fixing grammar and punctuation
-3. Making sentences clear and professional
-4. Maintaining the original meaning
+        prompt = f"""Clean up this transcribed text:
 
 Original text:
 {request.text}
 
 Provide only the cleaned text without any explanation."""
         
-        response = await chat.chat(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3
+        response = await chat.send_message(
+            UserMessage(text=prompt)
         )
         
-        cleaned_text = response.choices[0].message.content
+        cleaned_text = response if isinstance(response, str) else response.message.text
         
         return {"processed_text": cleaned_text, "original_text": request.text}
     
@@ -158,7 +156,11 @@ async def delete_transcription(transcription_id: str):
 
 @api_router.post("/dictionary", response_model=DictionaryWord)
 async def add_dictionary_word(input: DictionaryWordCreate):
-    existing = await db.dictionary.find_one({"word": input.word.lower()}, {"_id": 0})
+    import re
+    existing = await db.dictionary.find_one(
+        {"word": {"$regex": f"^{re.escape(input.word)}$", "$options": "i"}}, 
+        {"_id": 0}
+    )
     if existing:
         raise HTTPException(status_code=400, detail="Word already exists in dictionary")
     
