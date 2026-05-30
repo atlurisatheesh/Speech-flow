@@ -24,6 +24,7 @@ const MicRecorder = ({ onRecordingComplete, onLiveText, apiUrl, disabled }) => {
   const chunkIntervalRef = useRef(null);
   const liveRecorderRef = useRef(null);
   const liveChunksRef = useRef([]);
+  const wsRef = useRef(null);
 
   useEffect(() => {
     return () => cleanup();
@@ -38,58 +39,63 @@ const MicRecorder = ({ onRecordingComplete, onLiveText, apiUrl, disabled }) => {
     if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
       audioContextRef.current.close();
     }
-  };
-
-  const transcribeChunk = async (blob) => {
-    if (!blob || blob.size < 1000) return;
-    setChunksTranscribing(c => c + 1);
-    try {
-      const formData = new FormData();
-      formData.append('file', blob, 'chunk.webm');
-      const response = await axios.post(`${apiUrl}/transcribe/chunk`, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' }
-      });
-      if (response.data.text) {
-        onLiveText?.(response.data.text);
-      }
-    } catch (e) {
-      console.error('Chunk transcribe error:', e);
-    } finally {
-      setChunksTranscribing(c => Math.max(0, c - 1));
+    if (wsRef.current) {
+      wsRef.current.close();
     }
   };
 
   const startLiveChunkLoop = (stream, mimeType) => {
-    // Create a fresh recorder for each chunk to ensure complete WebM headers
-    const recordOneChunk = () => {
-      if (!liveModeRef.current) return;
-      
-      liveChunksRef.current = [];
-      const recorder = new MediaRecorder(stream, { mimeType });
-      liveRecorderRef.current = recorder;
-      
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) liveChunksRef.current.push(e.data);
+    const wsUrl = apiUrl.replace(/^http/, 'ws') + '/transcribe/stream';
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.text) {
+          onLiveText?.(data.text);
+        }
+      } catch (e) {
+        console.error("WS message parse error:", e);
+      }
+    };
+
+    ws.onopen = () => {
+      const recordOneChunk = () => {
+        if (!liveModeRef.current) return;
+        
+        liveChunksRef.current = [];
+        const recorder = new MediaRecorder(stream, { mimeType });
+        liveRecorderRef.current = recorder;
+        
+        recorder.ondataavailable = (e) => {
+          if (e.data.size > 0) liveChunksRef.current.push(e.data);
+        };
+        
+        recorder.onstop = () => {
+          const blob = new Blob(liveChunksRef.current, { type: mimeType });
+          if (blob.size >= 1000 && ws.readyState === WebSocket.OPEN) {
+            ws.send(blob);
+          }
+          if (liveModeRef.current) {
+            recordOneChunk();
+          }
+        };
+        
+        recorder.start();
+        setTimeout(() => {
+          if (recorder.state === 'recording') {
+            recorder.stop();
+          }
+        }, 1500); // 1.5 seconds for true real-time feel
       };
       
-      recorder.onstop = () => {
-        const blob = new Blob(liveChunksRef.current, { type: mimeType });
-        transcribeChunk(blob);
-        // Start next chunk immediately if still in live mode
-        if (liveModeRef.current) {
-          recordOneChunk();
-        }
-      };
-      
-      recorder.start();
-      setTimeout(() => {
-        if (recorder.state === 'recording') {
-          recorder.stop();
-        }
-      }, CHUNK_INTERVAL);
+      recordOneChunk();
     };
     
-    recordOneChunk();
+    ws.onerror = (error) => {
+      console.error("WebSocket Error:", error);
+    };
   };
 
   const startRecording = async (liveMode = false) => {
@@ -152,6 +158,10 @@ const MicRecorder = ({ onRecordingComplete, onLiveText, apiUrl, disabled }) => {
 
   const stopRecording = () => {
     liveModeRef.current = false;
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
     if (liveRecorderRef.current && liveRecorderRef.current.state === 'recording') {
       liveRecorderRef.current.stop();
     }
@@ -200,9 +210,7 @@ const MicRecorder = ({ onRecordingComplete, onLiveText, apiUrl, disabled }) => {
             <div className="flex items-center gap-1.5 text-[#002FA7]" data-testid="live-indicator">
               <Radio className="w-3.5 h-3.5" />
               <span className="uppercase tracking-wider text-xs">Live</span>
-              {chunksTranscribing > 0 && (
-                <Loader2 className="w-3 h-3 animate-spin ml-1" />
-              )}
+              <Loader2 className="w-3 h-3 animate-spin ml-1" />
             </div>
           )}
         </div>

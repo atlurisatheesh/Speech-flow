@@ -38,6 +38,29 @@ code {
         --ring: 219 100% 33%;
         --radius: 0.25rem;
     }
+
+    .dark {
+        --background: 240 6% 10%;
+        --foreground: 0 0% 95%;
+        --card: 240 6% 12%;
+        --card-foreground: 0 0% 95%;
+        --popover: 240 6% 12%;
+        --popover-foreground: 0 0% 95%;
+        --primary: 219 100% 55%;
+        --primary-foreground: 0 0% 100%;
+        --secondary: 240 5% 16%;
+        --secondary-foreground: 0 0% 85%;
+        --muted: 240 5% 18%;
+        --muted-foreground: 240 4% 55%;
+        --accent: 0 84% 56%;
+        --accent-foreground: 0 0% 100%;
+        --destructive: 0 62% 50%;
+        --destructive-foreground: 0 0% 100%;
+        --border: 240 5% 22%;
+        --input: 240 5% 22%;
+        --ring: 219 100% 55%;
+        --radius: 0.25rem;
+    }
 }
 
 @layer base {
@@ -61,6 +84,26 @@ code {
             opacity: 0.5;
         }
     }
+}
+
+/* Dark mode transitions */
+.dark * {
+    transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+/* Scrollbar styles */
+::-webkit-scrollbar {
+    width: 6px;
+}
+::-webkit-scrollbar-track {
+    background: hsl(var(--secondary));
+}
+::-webkit-scrollbar-thumb {
+    background: hsl(var(--muted-foreground) / 0.3);
+    border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--muted-foreground) / 0.5);
 }
 
 @layer base {

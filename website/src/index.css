@@ -1,0 +1,334 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Playfair+Display:ital,wght@0,400;0,600;1,400&display=swap');
+
+:root {
+  --bg-color: #050505;
+  --bg-secondary: #0F111A;
+  --text-primary: #FFFFFF;
+  --text-secondary: #9CA3AF;
+  --accent-primary: #06b6d4; /* Cyan */
+  --accent-secondary: #a855f7; /* Purple */
+  --glass-bg: rgba(25, 27, 38, 0.6);
+  --glass-border: rgba(255, 255, 255, 0.08);
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg-color);
+  color: var(--text-primary);
+  font-family: 'Inter', sans-serif;
+  overflow-x: hidden;
+  scroll-behavior: smooth;
+}
+
+/* Typography */
+h1, h2, h3 {
+  font-family: 'Playfair Display', serif;
+  font-weight: 400;
+  margin: 0;
+}
+
+h1 {
+  font-size: 5rem;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+}
+
+h2 {
+  font-size: 3.5rem;
+  line-height: 1.2;
+}
+
+p {
+  font-size: 1.125rem;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+/* Utilities */
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+.gradient-text {
+  background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+  color: white;
+  border: none;
+  padding: 16px 32px;
+  border-radius: 30px;
+  font-size: 1.125rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  box-shadow: 0 10px 30px rgba(168, 85, 247, 0.3);
+}
+
+.btn-primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 15px 40px rgba(168, 85, 247, 0.5);
+}
+
+.btn-secondary {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  color: white;
+  padding: 12px 24px;
+  border-radius: 30px;
+  font-size: 1rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  backdrop-filter: blur(10px);
+}
+
+.btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.1);
+  transform: translateY(-2px);
+}
+
+/* Navigation */
+nav {
+  position: fixed;
+  top: 0;
+  width: 100%;
+  padding: 20px 0;
+  z-index: 100;
+  background: rgba(5, 5, 5, 0.8);
+  backdrop-filter: blur(20px);
+  border-bottom: 1px solid var(--glass-border);
+}
+
+.nav-content {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.logo {
+  font-family: 'Playfair Display', serif;
+  font-size: 1.5rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.nav-links {
+  display: flex;
+  gap: 32px;
+}
+
+.nav-links a {
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: 0.95rem;
+  transition: color 0.2s;
+}
+
+.nav-links a:hover {
+  color: white;
+}
+
+/* Hero Section */
+.hero {
+  padding: 180px 0 100px;
+  text-align: center;
+  position: relative;
+}
+
+.hero-glow {
+  position: absolute;
+  top: 10%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 600px;
+  height: 600px;
+  background: radial-gradient(circle, rgba(168,85,247,0.15) 0%, rgba(6,182,212,0.1) 40%, rgba(5,5,5,0) 70%);
+  z-index: -1;
+  border-radius: 50%;
+  filter: blur(40px);
+}
+
+.hero h1 {
+  margin-bottom: 24px;
+}
+
+.hero p {
+  max-width: 600px;
+  margin: 0 auto 40px;
+  font-size: 1.25rem;
+}
+
+/* Mockup Showcase */
+.mockup-container {
+  margin-top: 80px;
+  position: relative;
+  perspective: 1000px;
+}
+
+.mockup-widget {
+  width: 400px;
+  margin: 0 auto;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 24px;
+  padding: 16px;
+  box-shadow: 0 30px 60px rgba(0, 0, 0, 0.5), inset 0 1px 1px rgba(255, 255, 255, 0.2);
+  backdrop-filter: blur(20px);
+  transform: rotateX(10deg);
+  animation: float 6s ease-in-out infinite;
+}
+
+@keyframes float {
+  0% { transform: rotateX(10deg) translateY(0px); }
+  50% { transform: rotateX(10deg) translateY(-20px); }
+  100% { transform: rotateX(10deg) translateY(0px); }
+}
+
+.mockup-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.mockup-title {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.mockup-icons {
+  display: flex;
+  gap: 12px;
+}
+
+.mockup-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+}
+
+.mockup-icon.active {
+  background: #ef4444;
+  box-shadow: 0 0 15px rgba(239, 68, 68, 0.4);
+}
+
+/* Features Grid */
+.features {
+  padding: 100px 0;
+  background: var(--bg-secondary);
+  position: relative;
+}
+
+.features-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 32px;
+  margin-top: 60px;
+}
+
+.feature-card {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  padding: 40px;
+  border-radius: 24px;
+  transition: all 0.3s ease;
+}
+
+.feature-card:hover {
+  transform: translateY(-10px);
+  border-color: rgba(255, 255, 255, 0.2);
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+}
+
+.feature-icon {
+  width: 64px;
+  height: 64px;
+  border-radius: 20px;
+  background: linear-gradient(135deg, rgba(6,182,212,0.1), rgba(168,85,247,0.1));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 24px;
+  color: var(--accent-primary);
+}
+
+.feature-card h3 {
+  font-family: 'Inter', sans-serif;
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+
+/* Apps Showcase */
+.apps-showcase {
+  padding: 100px 0;
+  text-align: center;
+}
+
+.apps-grid {
+  display: flex;
+  justify-content: center;
+  gap: 24px;
+  flex-wrap: wrap;
+  margin-top: 40px;
+}
+
+.app-icon {
+  width: 80px;
+  height: 80px;
+  border-radius: 24px;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2rem;
+  transition: all 0.3s ease;
+}
+
+.app-icon:hover {
+  transform: scale(1.1);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* Footer */
+footer {
+  padding: 100px 0 40px;
+  border-top: 1px solid var(--glass-border);
+  text-align: center;
+}
+
+.footer-logo {
+  font-family: 'Playfair Display', serif;
+  font-size: 8rem;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.05);
+  margin-bottom: 40px;
+  letter-spacing: -0.05em;
+}
+
+.typing-text::after {
+  content: '|';
+  animation: blink 1s step-start infinite;
+}
+
+@keyframes blink {
+  50% { opacity: 0; }
+}

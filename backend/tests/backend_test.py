@@ -312,6 +312,7 @@ class TestIteration3SpeakerLabels:
         # Verify via GET that update overwrote
         r = requests.get(f"{API}/transcriptions")
         match = next((t for t in r.json() if t['id'] == tid), None)
+        assert match is not None
         assert match['speaker_labels'] == {"Speaker 1": "Charlie"}
 
     def test_05_patch_speakers_404(self):
