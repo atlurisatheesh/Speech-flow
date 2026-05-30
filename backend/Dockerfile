@@ -22,8 +22,8 @@ COPY backend/ .
 # Set environment variable to indicate cloud deployment
 ENV CLOUD_MODE=true
 
-# Expose port 1993
+# Expose port 1993 (for local dev documentation)
 EXPOSE 1993
 
-# Run FastAPI using Uvicorn
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "1993"]
+# Run FastAPI using Uvicorn on Render's dynamic PORT
+CMD uvicorn server:app --host 0.0.0.0 --port ${PORT:-1993}
