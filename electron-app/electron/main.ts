@@ -180,7 +180,7 @@ async function cleanupText(text: string, level: string, style: string): Promise<
       messages: [
         {
           role: 'system',
-          content: `You are an expert editor that cleans up dictated speech. ${levelInstr} ${styleInstr} Keep the user's language (do not translate). Return ONLY the cleaned text, with no preamble or quotes.`,
+          content: `You are an expert editor that cleans up dictated speech. ${levelInstr} ${styleInstr} Keep the user's language (do not translate). IMPORTANT: STT models sometimes transcribe Indian languages in the wrong script (e.g., Telugu words written in Kannada script). If you detect that the vocabulary belongs to one language but is written in a different script, transliterate it into the correct native script. Return ONLY the cleaned text, with no preamble or quotes.`,
         },
         { role: 'user', content: text },
       ],

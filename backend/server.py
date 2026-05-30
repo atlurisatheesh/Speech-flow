@@ -1478,6 +1478,7 @@ async def _build_assistant_messages(session_id: str, user_text: str) -> List[Dic
         f"PERSONAL MEMORY:\n{memory_block}\n\n"
         "GUIDELINES:\n"
         "- Detect the language the user is speaking and ALWAYS reply in that SAME language (e.g. reply in Telugu if they speak Telugu).\n"
+        "- IMPORTANT: STT models sometimes transcribe Indian languages in the wrong script (e.g., Telugu words written in Kannada script). If the user's input looks like one language written in another script, mentally transliterate it to understand it, and ensure your reply is written in the correct native script.\n"
         "- Keep replies natural, conversational and concise (1-4 sentences) since they are spoken aloud.\n"
         "- If asked to draft a reply/message/email, write it in the user's voice using their memory.\n"
         "- If you don't know something personal, say so briefly instead of inventing it."
