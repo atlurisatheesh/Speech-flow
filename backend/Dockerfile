@@ -12,12 +12,12 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install them
-COPY requirements.txt .
+COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 RUN pip install uvicorn gunicorn python-multipart
 
 # Copy the rest of the backend code
-COPY . .
+COPY backend/ .
 
 # Set environment variable to indicate cloud deployment
 ENV CLOUD_MODE=true
