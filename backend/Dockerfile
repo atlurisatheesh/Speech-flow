@@ -8,7 +8,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     portaudio19-dev \
     gcc \
-    libasound-dev \
+    libasound2-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install them
