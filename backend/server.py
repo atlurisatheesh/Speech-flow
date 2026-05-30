@@ -814,11 +814,72 @@ async def websocket_transcribe(websocket: WebSocket):
     except WebSocketDisconnect:
         logging.info("WebSocket disconnected")
 
+@api_router.websocket("/transcribe/live")
+async def websocket_live_transcribe(websocket: WebSocket):
+    """Low-latency streaming dictation.
+
+    Protocol: client may send a JSON text frame {"prompt": "...", "language": "en"}
+    to set continuity context, followed by binary audio frames (a self-contained webm
+    of the current speech segment). Server transcribes each audio frame with Whisper,
+    biasing decoding with the running `prompt` for better cross-segment accuracy, and
+    replies {"text": "..."}.
+    """
+    await websocket.accept()
+    language = websocket.query_params.get("language")
+    prompt = ""
+    seq = 0
+    try:
+        while True:
+            msg = await websocket.receive()
+            if msg.get("type") == "websocket.disconnect":
+                break
+
+            if msg.get("text") is not None:
+                try:
+                    cfg = json_module.loads(msg["text"])
+                    if "prompt" in cfg:
+                        prompt = cfg.get("prompt") or ""
+                    if cfg.get("language"):
+                        language = cfg["language"]
+                    if "seq" in cfg:
+                        seq = cfg.get("seq") or 0
+                except Exception:
+                    pass
+                continue
+
+            data = msg.get("bytes")
+            if not data or len(data) < 1200:
+                await websocket.send_json({"text": "", "seq": seq})
+                continue
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as temp_file:
+                temp_file.write(data)
+                temp_path = temp_file.name
+            try:
+                with open(temp_path, "rb") as audio_file:
+                    kwargs: Dict[str, Any] = {
+                        "file": audio_file, "model": "whisper-1", "response_format": "json",
+                    }
+                    if language and language != "auto":
+                        kwargs["language"] = language
+                    if prompt:
+                        kwargs["prompt"] = prompt[-400:]
+                    response = await openai_client.audio.transcriptions.create(**cast(Any, kwargs))
+                await websocket.send_json({"text": getattr(response, "text", "") or "", "seq": seq})
+            except Exception as e:
+                logging.error(f"Live transcribe error: {e}")
+                await websocket.send_json({"text": "", "seq": seq, "error": str(e)})
+            finally:
+                os.unlink(temp_path)
+    except WebSocketDisconnect:
+        logging.info("Live transcribe WebSocket disconnected")
+
+
 @api_router.post("/transcribe/diarize")
 async def diarize_transcript(request: DiarizeRequest):
     try:
         import json as json_lib
-        
+
         system_message="Speaker diarization. Return ONLY JSON."
         
         # Compact prompt - use indices only, shorter text

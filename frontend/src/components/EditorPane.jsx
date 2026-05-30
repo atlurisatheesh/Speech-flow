@@ -116,8 +116,8 @@ const EditorPane = ({
     setLiveText('');
   };
 
-  const handleLiveText = (chunk) => {
-    setLiveText(prev => prev ? `${prev} ${chunk}` : chunk);
+  const handleLiveText = (text) => {
+    setLiveText(text);
   };
 
   const handleAIProcess = async () => {
@@ -342,6 +342,7 @@ const EditorPane = ({
                 onRecordingComplete={handleRecordingComplete} 
                 onLiveText={handleLiveText}
                 apiUrl={apiUrl}
+                language={selectedLanguage}
                 disabled={loading} 
               />
               <Button
@@ -436,6 +437,7 @@ const EditorPane = ({
                   onRecordingComplete={handleRecordingComplete}
                   onLiveText={handleLiveText}
                   apiUrl={apiUrl}
+                  language={selectedLanguage}
                   disabled={loading} 
                 />
                 <Button

@@ -3,28 +3,39 @@ import { Mic, Square, Loader2, Radio } from 'lucide-react';
 import { Button } from './ui/button';
 import { motion } from 'framer-motion';
 import { toast } from 'sonner';
-import axios from 'axios';
 
-const CHUNK_INTERVAL = 5000; // 5 seconds per chunk
+// Low-latency live dictation tuning
+const SEND_INTERVAL = 1000;       // push an interim transcription roughly every 1s
+const SILENCE_THRESHOLD = 0.08;   // normalized audio level below which we treat as a pause
+const PAUSE_COMMIT_MS = 1200;     // commit the current segment after this much silence
+const MAX_SEGMENT_MS = 12000;     // hard cap so a single segment never grows too large
 
-const MicRecorder = ({ onRecordingComplete, onLiveText, apiUrl, disabled }) => {
+const MicRecorder = ({ onRecordingComplete, onLiveText, apiUrl, disabled, language = 'auto' }) => {
   const [isRecording, setIsRecording] = useState(false);
   const [isLiveMode, setIsLiveMode] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const [audioLevel, setAudioLevel] = useState(0);
-  const [chunksTranscribing, setChunksTranscribing] = useState(0);
-  
+
   const mainRecorderRef = useRef(null);
-  const allChunksRef = useRef([]); // full recording for final save
+  const allChunksRef = useRef([]); // full recording for final accurate save
   const timerRef = useRef(null);
   const animationRef = useRef(null);
   const streamRef = useRef(null);
   const audioContextRef = useRef(null);
   const liveModeRef = useRef(false);
-  const chunkIntervalRef = useRef(null);
-  const liveRecorderRef = useRef(null);
-  const liveChunksRef = useRef([]);
   const wsRef = useRef(null);
+
+  // Live streaming refs
+  const liveRecorderRef = useRef(null);
+  const segFragsRef = useRef([]);
+  const segStartRef = useRef(0);
+  const committedRef = useRef('');
+  const interimRef = useRef('');
+  const seqRef = useRef(0);
+  const sendIntervalRef = useRef(null);
+  const audioLevelRef = useRef(0);
+  const lastVoiceTimeRef = useRef(0);
+  const mimeTypeRef = useRef('audio/webm');
 
   useEffect(() => {
     return () => cleanup();
@@ -34,68 +45,95 @@ const MicRecorder = ({ onRecordingComplete, onLiveText, apiUrl, disabled }) => {
   const cleanup = () => {
     if (timerRef.current) clearInterval(timerRef.current);
     if (animationRef.current) cancelAnimationFrame(animationRef.current);
-    if (chunkIntervalRef.current) clearInterval(chunkIntervalRef.current);
-    if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
+    if (sendIntervalRef.current) clearInterval(sendIntervalRef.current);
+    if (streamRef.current) streamRef.current.getTracks().forEach((t) => t.stop());
     if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
       audioContextRef.current.close();
     }
-    if (wsRef.current) {
-      wsRef.current.close();
-    }
+    if (wsRef.current) wsRef.current.close();
   };
 
-  const startLiveChunkLoop = (stream, mimeType) => {
-    const wsUrl = apiUrl.replace(/^http/, 'ws') + '/transcribe/stream';
+  const emitLive = () => {
+    const full = `${committedRef.current} ${interimRef.current}`.trim();
+    onLiveText?.(full);
+  };
+
+  const startSegment = () => {
+    if (!streamRef.current) return;
+    segFragsRef.current = [];
+    segStartRef.current = Date.now();
+    const recorder = new MediaRecorder(streamRef.current, { mimeType: mimeTypeRef.current });
+    liveRecorderRef.current = recorder;
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) segFragsRef.current.push(e.data);
+    };
+    recorder.start(250); // emit data every 250ms for a continuous, self-contained segment
+  };
+
+  const commitSegment = () => {
+    if (interimRef.current.trim()) {
+      committedRef.current = `${committedRef.current} ${interimRef.current.trim()}`.trim();
+    }
+    interimRef.current = '';
+    seqRef.current += 1; // invalidate any in-flight responses from the previous segment
+    emitLive();
+    const rec = liveRecorderRef.current;
+    if (rec && rec.state === 'recording') {
+      try { rec.stop(); } catch (e) { /* noop */ }
+    }
+    if (liveModeRef.current) startSegment();
+  };
+
+  const sendInterim = () => {
+    if (!liveModeRef.current) return;
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+    const segElapsed = Date.now() - segStartRef.current;
+    const silentFor = Date.now() - lastVoiceTimeRef.current;
+
+    // Commit on a natural pause (with something transcribed) or when the segment is too long
+    if ((interimRef.current.trim() && silentFor > PAUSE_COMMIT_MS) || segElapsed > MAX_SEGMENT_MS) {
+      commitSegment();
+      return;
+    }
+
+    const frags = segFragsRef.current;
+    if (!frags.length) return;
+    const blob = new Blob(frags, { type: mimeTypeRef.current });
+    if (blob.size < 1200) return;
+
+    // Send continuity context + sequence id, then the audio for this segment
+    ws.send(JSON.stringify({ prompt: committedRef.current.slice(-400), seq: seqRef.current }));
+    ws.send(blob);
+  };
+
+  const startLiveStreaming = () => {
+    const langQuery = language && language !== 'auto' ? `?language=${encodeURIComponent(language)}` : '';
+    const wsUrl = apiUrl.replace(/^http/, 'ws') + '/transcribe/live' + langQuery;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
+    committedRef.current = '';
+    interimRef.current = '';
+    seqRef.current = 0;
 
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        if (data.text) {
-          onLiveText?.(data.text);
-        }
+        if (data.seq !== seqRef.current) return; // ignore stale results from a committed segment
+        interimRef.current = data.text || '';
+        emitLive();
       } catch (e) {
-        console.error("WS message parse error:", e);
+        console.error('WS message parse error:', e);
       }
     };
 
     ws.onopen = () => {
-      const recordOneChunk = () => {
-        if (!liveModeRef.current) return;
-        
-        liveChunksRef.current = [];
-        const recorder = new MediaRecorder(stream, { mimeType });
-        liveRecorderRef.current = recorder;
-        
-        recorder.ondataavailable = (e) => {
-          if (e.data.size > 0) liveChunksRef.current.push(e.data);
-        };
-        
-        recorder.onstop = () => {
-          const blob = new Blob(liveChunksRef.current, { type: mimeType });
-          if (blob.size >= 1000 && ws.readyState === WebSocket.OPEN) {
-            ws.send(blob);
-          }
-          if (liveModeRef.current) {
-            recordOneChunk();
-          }
-        };
-        
-        recorder.start();
-        setTimeout(() => {
-          if (recorder.state === 'recording') {
-            recorder.stop();
-          }
-        }, 1500); // 1.5 seconds for true real-time feel
-      };
-      
-      recordOneChunk();
+      startSegment();
+      sendIntervalRef.current = setInterval(sendInterim, SEND_INTERVAL);
     };
-    
-    ws.onerror = (error) => {
-      console.error("WebSocket Error:", error);
-    };
+
+    ws.onerror = (error) => console.error('Live WebSocket error:', error);
   };
 
   const startRecording = async (liveMode = false) => {
@@ -114,14 +152,19 @@ const MicRecorder = ({ onRecordingComplete, onLiveText, apiUrl, disabled }) => {
         const dataArray = new Uint8Array(analyser.frequencyBinCount);
         analyser.getByteFrequencyData(dataArray);
         const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
-        setAudioLevel(avg / 128);
+        const level = avg / 128;
+        audioLevelRef.current = level;
+        if (level >= SILENCE_THRESHOLD) lastVoiceTimeRef.current = Date.now();
+        setAudioLevel(level);
         animationRef.current = requestAnimationFrame(updateLevel);
       };
+      lastVoiceTimeRef.current = Date.now();
       updateLevel();
 
       const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4';
-      
-      // Main recorder for full recording (for save at end)
+      mimeTypeRef.current = mimeType;
+
+      // Main recorder: captures the whole take for a final, fully-accurate transcription on stop
       allChunksRef.current = [];
       const mainRecorder = new MediaRecorder(stream, { mimeType });
       mainRecorder.ondataavailable = (e) => {
@@ -132,7 +175,7 @@ const MicRecorder = ({ onRecordingComplete, onLiveText, apiUrl, disabled }) => {
         const ext = mimeType.includes('webm') ? 'webm' : 'mp4';
         const file = new File([blob], `recording-${Date.now()}.${ext}`, { type: mimeType });
         onRecordingComplete(file, blob);
-        stream.getTracks().forEach(t => t.stop());
+        stream.getTracks().forEach((t) => t.stop());
         if (audioContext.state !== 'closed') audioContext.close();
         if (animationRef.current) cancelAnimationFrame(animationRef.current);
         setAudioLevel(0);
@@ -140,16 +183,15 @@ const MicRecorder = ({ onRecordingComplete, onLiveText, apiUrl, disabled }) => {
       mainRecorder.start();
       mainRecorderRef.current = mainRecorder;
 
-      // Live chunk loop (parallel recorder for streaming)
       if (liveMode) {
         liveModeRef.current = true;
-        startLiveChunkLoop(stream, mimeType);
+        startLiveStreaming();
       }
 
       setIsRecording(true);
       setIsLiveMode(liveMode);
       setRecordingTime(0);
-      timerRef.current = setInterval(() => setRecordingTime(p => p + 1), 1000);
+      timerRef.current = setInterval(() => setRecordingTime((p) => p + 1), 1000);
     } catch (error) {
       console.error('Recording error:', error);
       toast.error('Microphone access denied or unavailable');
@@ -158,12 +200,16 @@ const MicRecorder = ({ onRecordingComplete, onLiveText, apiUrl, disabled }) => {
 
   const stopRecording = () => {
     liveModeRef.current = false;
+    if (sendIntervalRef.current) {
+      clearInterval(sendIntervalRef.current);
+      sendIntervalRef.current = null;
+    }
+    if (liveRecorderRef.current && liveRecorderRef.current.state === 'recording') {
+      try { liveRecorderRef.current.stop(); } catch (e) { /* noop */ }
+    }
     if (wsRef.current) {
       wsRef.current.close();
       wsRef.current = null;
-    }
-    if (liveRecorderRef.current && liveRecorderRef.current.state === 'recording') {
-      liveRecorderRef.current.stop();
     }
     if (mainRecorderRef.current && isRecording) {
       mainRecorderRef.current.stop();
