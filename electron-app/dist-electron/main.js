@@ -85,11 +85,9 @@ function createWindow() {
 }
 // Win32 Paste simulation (using powershell as a fallback without node-gyp)
 function pasteAtCursor() {
-    const script = `
-    Add-Type -AssemblyName System.Windows.Forms
-    [System.Windows.Forms.SendKeys]::SendWait("^{v}")
-  `;
-    (0, child_process_1.exec)(`powershell -command "${script}"`, (err) => {
+    const vbsPath = path.join(electron_1.app.getPath('temp'), 'paste.vbs');
+    fs.writeFileSync(vbsPath, 'Set WshShell = WScript.CreateObject("WScript.Shell")\\nWshShell.SendKeys "^v"');
+    (0, child_process_1.exec)(`wscript.exe "${vbsPath}"`, (err) => {
         if (err)
             console.error('Paste error:', err);
     });
@@ -303,8 +301,9 @@ electron_1.ipcMain.handle('transcribe-text', async (_event, blobBuffer) => {
 });
 // Command / Transform mode: polish the currently selected text in place.
 function sendKeys(keys) {
-    const script = `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('${keys}')`;
-    (0, child_process_1.exec)(`powershell -command "${script}"`, (err) => {
+    const vbsPath = path.join(electron_1.app.getPath('temp'), 'sendkeys.vbs');
+    fs.writeFileSync(vbsPath, `Set WshShell = WScript.CreateObject("WScript.Shell")\\nWshShell.SendKeys "${keys}"`);
+    (0, child_process_1.exec)(`wscript.exe "${vbsPath}"`, (err) => {
         if (err)
             console.error('SendKeys error:', err);
     });
