@@ -12,7 +12,8 @@ import { DictionaryView } from './features/dictionary/components/DictionaryView'
 import { SnippetsView } from './features/snippets/components/SnippetsView';
 import { PlaceholderView } from './features/core/components/PlaceholderView';
 import { VoiceProfilesView } from './features/voice-profiles/components/VoiceProfilesView';
-
+import { ScratchpadView } from './features/scratchpad/components/ScratchpadView';
+import { SettingsView } from './features/settings/components/SettingsView';
 
 declare global {
   interface Window {
@@ -286,7 +287,8 @@ function App() {
       case 'dictate': return <VoiceProfilesView />;
       case 'dictionary': return <DictionaryView />;
       case 'snippets': return <SnippetsView />;
-      case 'scratchpad': return <PlaceholderView title="Scratchpad" icon={PenTool} description="A distraction-free zone to dictate long-form content before pasting it elsewhere." />;
+      case 'scratchpad': return <ScratchpadView />;
+      case 'settings': return <SettingsView />;
       default: return <HomeView history={history} onDelete={handleDelete} onCopy={handleCopy} searchQuery={searchQuery} onSearchChange={handleSearchChange} />;
     }
   };
@@ -360,7 +362,10 @@ function App() {
         <div className="dock-spacer" />
 
         <div className="dock-menu">
-          <button className="dock-item">
+          <button 
+            className={`dock-item ${activeTab === 'settings' ? 'active' : ''}`} 
+            onClick={() => setActiveTab('settings')}
+          >
             <Settings2 size={22} style={{ flexShrink: 0 }} />
             <span className="dock-label">Settings</span>
           </button>
