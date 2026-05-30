@@ -108,6 +108,8 @@ app.add_middleware(
 api_router = APIRouter(prefix="/api")
 
 openai_client = make_llm_client()
+# Reusable TTS client (avoids re-instantiating on every assistant call)
+tts_client = OpenAITextToSpeech(api_key=EMERGENT_LLM_KEY)
 
 # ── WebSocket Connection Manager ──────────────────────────────
 import json as json_module
@@ -1446,7 +1448,7 @@ class MemoryItem(BaseModel):
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class MemoryCreate(BaseModel):
-    content: str
+    content: str = Field(..., max_length=2000)
     category: Optional[str] = "general"
 
 class AssistantTextRequest(BaseModel):
@@ -1522,8 +1524,7 @@ async def _run_assistant(session_id: str, user_text: str, voice: str, speak: boo
         try:
             if voice not in ASSISTANT_VOICES:
                 voice = "nova"
-            tts = OpenAITextToSpeech(api_key=EMERGENT_LLM_KEY)
-            audio_b64 = await tts.generate_speech_base64(
+            audio_b64 = await tts_client.generate_speech_base64(
                 text=reply_text[:4000], model="tts-1", voice=voice
             )
         except Exception as e:

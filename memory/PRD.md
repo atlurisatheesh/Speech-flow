@@ -1,53 +1,43 @@
-# SpeechFlow - AI-Powered Speech-to-Text Tool
+# SpeechFlow — AI Speech-to-Text + Autonomous Voice Assistant
 
 ## Original Problem Statement
-Build a tool like Whisper Flow (https://wisprflow.ai/) but even more accurate. Speech-to-text functionality with AI-powered enhancements.
+User imported an existing GitHub project "SpeechFlow" (Wispr Flow-style transcription app) and asked to expand it into a full AI assistant: all Wispr Flow features (and better), attractive animations, accurate mobile experience, faster speech-to-text, replies in the user's own voice (no Google voice), AI memory + auto-drafting of message/email replies, multilingual incl. Telugu, plus (deferred) spam-call/auto-answer agent and Gmail read/reply.
+
+## User Choices
+- LLM: **Emergent Universal LLM key** (no user OpenAI key needed).
+- Voice cloning: **free alternative** → OpenAI neural TTS preset voices (true cloning via ElevenLabs deferred/paid).
+- Gmail: yes (Emergent Google Auth + Gmail API) — **deferred to Phase 2**.
+- Twilio spam-call/auto-answer agent — **deferred** (also OS-limited; needs cloud call-forwarding).
 
 ## Architecture
-- **Backend**: FastAPI + MongoDB + OpenAI Whisper (via emergentintegrations)
-- **Frontend**: React + Tailwind + Shadcn UI + Framer Motion
-- **Design**: Swiss & High-Contrast aesthetic with Outfit + IBM Plex Sans fonts
-- **AI Models**: Whisper-1 (transcription), GPT-4o-mini (text enhancement)
+- **Backend**: FastAPI + MongoDB. AI routed through the Emergent universal-key proxy (`AsyncOpenAI(base_url=INTEGRATION_PROXY_URL + "/llm")`) for Whisper STT, GPT chat, and OpenAI TTS.
+- **Frontend**: React 19 + Tailwind + shadcn + Framer Motion (Swiss/high-contrast, Outfit + IBM Plex Sans).
+- Also in repo: electron-app, marketing website, desktop_widget.py (not the focus this session).
 
-## User Personas
-- **Professionals**: Need fast, accurate transcription for meetings, notes
-- **Students**: Class notes, essay drafts, cover letters
-- **Content Creators**: Quick voice-to-text for social media, blogs
-- **Developers**: Voice coding, commit messages
-- **Accessibility users**: Voice-first interaction
+## What's Been Implemented
+### Feb 2026 (pre-existing, now verified working)
+- Whisper transcription (file/chunk/stream/batch), AI enhance/process, summarize, translate (30+ langs incl. Telugu), command-mode edit, diarization, snippets, dictionary, settings, analytics, history, SRT/VTT/TXT/JSON export, folder watcher, websocket clipboard sync.
 
-## Core Requirements
-1. Audio file upload & transcription (MP3, WAV, M4A, WEBM)
-2. AI-powered auto-editing (filler removal, grammar, punctuation)
-3. Multi-language support (100+ languages via Whisper)
-4. Personal dictionary for custom words
-5. Transcript history management
-6. Copy/download functionality
+### This session (Jan 2026)
+- ✅ Migrated entire backend from direct `OPENAI_API_KEY` to **Emergent universal key** via OpenAI-compatible proxy (`make_llm_client()`). No user key required.
+- ✅ Fixed frontend build (stale wavesurfer.js webpack cache). Full app runs in workspace.
+- ✅ **NEW: AI Voice Assistant** — listens (Whisper) → thinks with personal memory (GPT) → replies aloud (TTS). Endpoints: `/api/assistant/text`, `/api/assistant/voice`, `/api/assistant/history`, `/api/assistant/voices`.
+- ✅ **NEW: Personal Memory** — `/api/memory` CRUD; injected into the assistant system prompt so replies are personalized/auto-drafted in the user's style; multilingual (replies in the language spoken).
+- ✅ **NEW frontend**: `VoiceAssistant.jsx` — mic recording, text chat, voice playback, voice selector, live Memory panel. Sidebar Sparkles nav button.
+- ✅ Hardening: cached TTS client, 2000-char memory cap.
+- ✅ Tested: backend 22/22 pytest + full regression; frontend 100% on all testable selectors.
 
-## What's Been Implemented (Feb 2026)
-- ✅ POST /api/transcribe/file - Uploads audio to object storage, returns audio_path
-- ✅ GET /api/transcriptions/{id}/audio - Serves stored audio for persistent playback
-- ✅ PATCH /api/transcriptions/{id}/speakers - Update speaker labels (e.g. Speaker 1 → Alice)
-- ✅ POST /api/transcribe/chunk - Streaming/live chunk transcription (no DB save)
-- ✅ POST /api/transcribe/process - AI text enhancement
-- ✅ POST /api/transcribe/diarize - AI speaker diarization
-- ✅ GET /api/transcriptions/{id}/export/{format} - SRT/VTT/TXT export
-- ✅ MicRecorder with Record + Live mode buttons (live streams chunks every 5s)
-- ✅ AudioPlayer with persistent backend URL (loads stored audio for historical transcripts)
-- ✅ Speaker rename panel with inline edit (click pencil, type name, save)
-- ✅ Live transcription preview box during streaming mode
-- ✅ "● AUDIO SAVED" indicator on transcripts with stored audio
-- ✅ All 34 backend tests passing (100%)
-
-## Prioritized Backlog (P0/P1/P2)
-- **P1**: User authentication & multi-user support
-- **P2**: Refactor server.py into routers (transcribe/storage/dictionary)
-- **P2**: Stripe-based subscriptions (Free/Pro/Team tiers)
-- **P2**: Stream WebSocket for true real-time (vs 5s chunks)
-- **P2**: Audio cleanup on transcription failure (rollback orphans)
-- **P2**: Team collaboration features (shared workspaces)
+## Prioritized Backlog
+- **P1 (next)**: Gmail read & auto-reply agent (Emergent Google Auth + Gmail API).
+- **P1**: True voice cloning ("reply in MY voice") via ElevenLabs (paid) — currently preset neural voices.
+- **P1**: Faster live dictation — true WebSocket streaming (vs preset voices/5s chunks); latency profiling.
+- **P2**: Map Emergent proxy `budget_exceeded` to friendly 429 + retry/backoff.
+- **P2**: Per-user/session id for assistant (currently shared `web-assistant` session); add auth.
+- **P2**: Memory relevance/top-k retrieval as memory grows; split server.py into routers.
+- **P3 (later)**: Cloud spam-call / missed-call auto-answer agent via Twilio call-forwarding (phone-OS cannot inject audio into live calls).
+- **P3**: Mobile app (currently empty `mobileApp/`).
 
 ## Next Tasks
-- Add real-time browser-based audio recording
-- Implement word-level timestamps display
-- Add subscription/payment integration
+1. Gmail agent (read inbox, draft & send replies using memory).
+2. ElevenLabs voice-cloning upgrade path.
+3. Streaming low-latency dictation.
