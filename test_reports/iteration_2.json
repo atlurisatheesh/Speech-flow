@@ -1,0 +1,57 @@
+{
+  "summary": "Iteration 2: Tested 4 new features (real-time mic recording, word/segment timestamps, speaker diarization, SRT/VTT/TXT export). Backend 18/20 pytest passing (90%). The 2 diarize failures are NOT code bugs - they are EMERGENT_LLM_KEY per-request budget cap errors ('Max budget: 0.001' exceeded with current cost 0.0011918). The small-payload diarize test passed, confirming the diarize endpoint logic itself is correct. Frontend: all new UI elements present and functional - Start Recording button, Upload button, Export dropdown (txt/srt/vtt), Identify Speakers button, segment data-testids. Successfully triggered .txt download via export menu.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/transcribe/diarize",
+        "issue": "Hits LLM per-request budget cap (Max budget: 0.001) for payloads with 3+ segments. Returns 500 'Budget has been exceeded'. RCA: emergent integrations LlmChat is being invoked with default params but the EMERGENT_LLM_KEY has a tight 0.001 USD per-request cap that's exceeded by even small (~600 token) prompts. Single-segment test passed; multi-segment dialogue/monologue tests failed. This is an environment/key config issue, not a code logic bug - the endpoint's request handling, JSON parsing, and segment-mapping logic are correct."
+      },
+      {
+        "endpoint": "POST /api/transcribe/file (short audio)",
+        "issue": "VERY short test tones (2-3s 440Hz) return null segments/words from Whisper. Backend handles this correctly (falls back to plain text on export) but UI 'Identify Speakers' button is permanently disabled for such transcripts (correct behavior, but worth noting for QA expectations)."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Hero/landing",
+        "issues": [
+          "Hero subtitle still overlaps red waveform image at the densest band. The added bg-white/40 backdrop-blur-[2px] overlay helps slightly but mid-band text contrast remains low. Consider increasing backdrop opacity or repositioning the waveform image."
+        ]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "INVESTIGATE: LLM per-request budget cap (0.001 USD). Diarize fails for any realistic multi-segment input. Either the EMERGENT_LLM_KEY budget config needs raising, OR the diarize prompt needs to be made more compact (e.g., split into chunks, or use a smaller system message). Currently diarize is effectively unusable for any audio longer than ~5 seconds.",
+    "OPTIONAL UX: Hero text contrast on red waveform - increase white backdrop opacity from 40% to 60-70%.",
+    "OPTIONAL: Pre-existing historical transcript 'test.wav' has text 'Beeeeeeeeeeep' but no segments stored (created before timestamps feature). Diarize and segments view are disabled for it - that's correct, but worth noting for users with legacy transcripts."
+  ],
+  "critical_code_review_comments": [
+    "server.py is approaching 360 lines - still acceptable but consider splitting into routers (transcribe, dictionary, export) before next feature.",
+    "Lazy imports inside endpoint handlers (LlmChat, json, re) - should be moved to module top for fail-fast behavior and IDE/linter visibility.",
+    "Diarize endpoint trusts LLM to return valid JSON; only has minimal markdown stripping. If LLM returns malformed JSON the json.loads will throw and be caught by broad except, masking the actual error. Consider catching JSONDecodeError separately with a clearer message.",
+    "Export endpoint: no file size limit on response. For very long transcripts the SRT/VTT generation builds entire string in memory - fine for now but consider streaming for >1hr audio.",
+    "Frontend MainApp.jsx handleExport uses Date.now() in filename instead of using filename from Content-Disposition header - works but ignores backend-provided filename."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (added TestTranscribeWithTimestamps with export tests, TestDiarize with monologue/dialogue/single-segment cases, added case-insensitive dictionary duplicate test)"
+  ],
+  "success_rate": {
+    "backend": "90% (18/20 pytest; the 2 failures are budget-cap env issue, not code)",
+    "frontend": "100% (all new UI elements present, export download works, mic recorder gracefully shows 'Microphone access denied' toast in headless browser)"
+  },
+  "test_credentials": "N/A - public app",
+  "seed_data_creation": "Tests create a 3-second 440Hz WAV in-memory and clean up after use. Pre-existing test.wav transcript ('Beeeeeeeeeeep') was kept in DB.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Diarize budget issue: the EMERGENT_LLM_KEY has a hard per-request budget of 0.001 USD. Even the smallest realistic diarize payload (3 short segments) exceeds it. Single-segment payloads work. If main agent raises the key budget or trims the prompt aggressively, re-run TestDiarize::test_single_speaker_monologue and test_multi_speaker_dialogue. Backend code itself is sound. Frontend is feature-complete: mic recorder, audio player, segments view (with click-to-seek data-testids), diarize button, and export dropdown all wired correctly. Headless browser cannot grant mic permission - 'Microphone access denied' toast appears (expected). Real mic recording flow needs manual verification.",
+  "rca of the issue": "Diarize 500: litellm.BadRequestError - OpenAIException 'Budget has been exceeded! Current cost: 0.0011918, Max budget: 0.001'. The EMERGENT_LLM_KEY is configured with a 0.001 USD per-request budget. The diarize prompt (system msg + JSON-formatted segments + instructions) costs ~$0.0012 even for a 3-segment input, so it always fails. Mitigation: (a) request budget raise on EMERGENT_LLM_KEY, OR (b) shorten the prompt (drop system message, send only 'Label each: <text>' lines, OR (c) batch segments client-side and send smaller chunks. The endpoint code itself (server.py lines 207-259) is correctly implemented - JSON parsing, markdown stripping, speaker_map merging all work as proven by the single-segment test passing."
+}
