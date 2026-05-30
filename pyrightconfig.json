@@ -1,7 +1,0 @@
-{
-  "stubPath": "backend/typings",
-  "reportMissingImports": "warning",
-  "pythonVersion": "3.13",
-  "include": ["backend"],
-  "extraPaths": ["backend"]
-}
