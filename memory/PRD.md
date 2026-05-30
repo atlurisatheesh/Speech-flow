@@ -19,7 +19,10 @@ User imported an existing GitHub project "SpeechFlow" (Wispr Flow-style transcri
 - Whisper transcription (file/chunk/stream/batch), AI enhance/process, summarize, translate (30+ langs incl. Telugu), command-mode edit, diarization, snippets, dictionary, settings, analytics, history, SRT/VTT/TXT/JSON export, folder watcher, websocket clipboard sync.
 
 ### This session (Jan 2026)
-- ✅ Migrated entire backend from direct `OPENAI_API_KEY` to **Emergent universal key** via OpenAI-compatible proxy (`make_llm_client()`). No user key required.
+- ✅ Migrated entire backend from direct `OPENAI_API_KEY` to **Emergent universal key** via the OpenAI-compatible proxy (`make_llm_client()`). No user key required.
+- ✅ **Low-latency live dictation**: new WebSocket `/api/transcribe/live` (continuous per-segment capture, ~1s interim results, pause-based commit, Whisper prompt-continuity + `seq` echo). Rewrote `MicRecorder.jsx`; EditorPane live text is now replace-mode.
+- ✅ Repo review: `website/` (marketing landing) and `electron-app/` (desktop app with feature views) contain real code; `mobileApp/` folder is EMPTY (nothing committed). Voice-cloning research: Gemini & OpenAI TTS = preset voices only, NO user-voice cloning (needs ElevenLabs, paid).
+- ⏸️ Gmail agent: paused by user (needs GOOGLE_CLIENT_ID/SECRET). Playbook obtained; scopes = gmail.readonly + gmail.send.
 - ✅ Fixed frontend build (stale wavesurfer.js webpack cache). Full app runs in workspace.
 - ✅ **NEW: AI Voice Assistant** — listens (Whisper) → thinks with personal memory (GPT) → replies aloud (TTS). Endpoints: `/api/assistant/text`, `/api/assistant/voice`, `/api/assistant/history`, `/api/assistant/voices`.
 - ✅ **NEW: Personal Memory** — `/api/memory` CRUD; injected into the assistant system prompt so replies are personalized/auto-drafted in the user's style; multilingual (replies in the language spoken).
