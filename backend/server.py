@@ -1417,6 +1417,195 @@ async def update_transcription(transcription_id: str, update: Dict[str, Any]):
     
     return {"message": "Transcription updated", "updated_fields": list(update_data.keys())}
 
+# ==========================================
+# AI VOICE ASSISTANT + PERSONAL MEMORY
+# ==========================================
+# A conversational agent that listens (Whisper STT), thinks with the user's
+# personal memory as context (GPT), and replies back in a spoken voice (TTS).
+# All powered by the Emergent universal key. Voice replies use OpenAI's neural
+# voices (free via Emergent key); true voice-cloning would require ElevenLabs.
+
+ASSISTANT_VOICES = ["alloy", "ash", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"]
+
+class MemoryItem(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    content: str
+    category: Optional[str] = "general"  # general, identity, preference, contact, task
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class MemoryCreate(BaseModel):
+    content: str = Field(..., max_length=2000)
+    category: Optional[str] = "general"
+
+class AssistantTextRequest(BaseModel):
+    text: str
+    session_id: Optional[str] = "default"
+    voice: Optional[str] = "nova"
+    speak: Optional[bool] = True
+
+@api_router.get("/memory")
+async def get_memory():
+    items = await db.assistant_memory.find({}, {"_id": 0}).sort("timestamp", -1).to_list(200)
+    for it in items:
+        if isinstance(it.get("timestamp"), str):
+            it["timestamp"] = datetime.fromisoformat(it["timestamp"])
+    return items
+
+@api_router.post("/memory", response_model=MemoryItem)
+async def add_memory(item: MemoryCreate):
+    obj = MemoryItem(content=item.content, category=item.category or "general")
+    doc = obj.model_dump()
+    doc["timestamp"] = doc["timestamp"].isoformat()
+    await db.assistant_memory.insert_one(doc)
+    return obj
+
+@api_router.delete("/memory/{memory_id}")
+async def delete_memory(memory_id: str):
+    result = await db.assistant_memory.delete_one({"id": memory_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Memory item not found")
+    return {"deleted": True}
+
+async def _build_assistant_messages(session_id: str, user_text: str) -> List[Dict[str, str]]:
+    """Assemble system prompt (with personal memory) + recent history + new turn."""
+    memory_items = await db.assistant_memory.find({}, {"_id": 0}).sort("timestamp", -1).to_list(100)
+    memory_block = "\n".join(f"- {m['content']}" for m in memory_items) if memory_items else "(no saved facts yet)"
+
+    system_message = (
+        "You are SpeechFlow Assistant, a warm, sharp personal voice assistant that speaks on behalf of the user. "
+        "You have access to the user's personal memory below — use it to answer accurately and in the user's style.\n\n"
+        f"PERSONAL MEMORY:\n{memory_block}\n\n"
+        "GUIDELINES:\n"
+        "- Detect the language the user is speaking and ALWAYS reply in that SAME language (e.g. reply in Telugu if they speak Telugu).\n"
+        "- Keep replies natural, conversational and concise (1-4 sentences) since they are spoken aloud.\n"
+        "- If asked to draft a reply/message/email, write it in the user's voice using their memory.\n"
+        "- If you don't know something personal, say so briefly instead of inventing it."
+    )
+
+    messages: List[Dict[str, str]] = [{"role": "system", "content": system_message}]
+
+    history = await db.assistant_conversations.find(
+        {"session_id": session_id}, {"_id": 0}
+    ).sort("timestamp", -1).to_list(8)
+    for msg in reversed(history):
+        messages.append({"role": "user", "content": msg.get("user_text", "")})
+        messages.append({"role": "assistant", "content": msg.get("assistant_text", "")})
+
+    messages.append({"role": "user", "content": user_text})
+    return messages
+
+async def _run_assistant(session_id: str, user_text: str, voice: str, speak: bool, language: Optional[str] = None):
+    """Generate the assistant reply (text + optional spoken audio) and persist the turn."""
+    client = make_llm_client()
+    messages = await _build_assistant_messages(session_id, user_text)
+    response = await client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=cast(Any, messages),
+        temperature=0.6,
+    )
+    reply_text = response.choices[0].message.content or "Sorry, I didn't catch that."
+
+    audio_b64 = None
+    if speak:
+        try:
+            if voice not in ASSISTANT_VOICES:
+                voice = "nova"
+            audio_b64 = await tts_client.generate_speech_base64(
+                text=reply_text[:4000], model="tts-1", voice=voice
+            )
+        except Exception as e:
+            logging.warning(f"TTS failed (returning text only): {e}")
+
+    await db.assistant_conversations.insert_one({
+        "session_id": session_id,
+        "user_text": user_text,
+        "assistant_text": reply_text,
+        "language": language,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+
+    return {
+        "transcript": user_text,
+        "reply_text": reply_text,
+        "reply_audio_base64": audio_b64,
+        "voice": voice,
+        "language": language,
+    }
+
+@api_router.post("/assistant/text")
+async def assistant_text(request: AssistantTextRequest):
+    """Text-in conversational assistant. Returns reply text + spoken audio (base64 mp3)."""
+    try:
+        return await _run_assistant(
+            request.session_id or "default", request.text,
+            request.voice or "nova", bool(request.speak),
+        )
+    except Exception as e:
+        logging.error(f"Assistant text error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Assistant failed: {str(e)}")
+
+@api_router.post("/assistant/voice")
+async def assistant_voice(
+    file: UploadFile = File(...),
+    session_id: str = Query("default"),
+    voice: str = Query("nova"),
+    language: Optional[str] = Query(None),
+):
+    """Voice-in: transcribe speech (Whisper) -> agent reply -> spoken audio reply."""
+    try:
+        file_ext = (file.filename or "speech.webm").split('.')[-1].lower()
+        if file_ext not in ['mp3', 'mp4', 'mpeg', 'mpga', 'm4a', 'wav', 'webm']:
+            file_ext = 'webm'
+        content = await file.read()
+        if len(content) < 800:
+            raise HTTPException(status_code=400, detail="Audio too short or empty")
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_ext}") as temp_file:
+            temp_file.write(content)
+            temp_path = temp_file.name
+        try:
+            with open(temp_path, "rb") as audio_file:
+                if language and language != "auto":
+                    stt = await openai_client.audio.transcriptions.create(
+                        file=audio_file, model="whisper-1", response_format="verbose_json", language=language
+                    )
+                else:
+                    stt = await openai_client.audio.transcriptions.create(
+                        file=audio_file, model="whisper-1", response_format="verbose_json"
+                    )
+            user_text = (stt.text or "").strip()
+            detected_lang = getattr(stt, "language", None)
+        finally:
+            os.unlink(temp_path)
+
+        if not user_text:
+            raise HTTPException(status_code=400, detail="Could not transcribe any speech")
+
+        return await _run_assistant(session_id, user_text, voice, True, detected_lang)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Assistant voice error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Assistant voice failed: {str(e)}")
+
+@api_router.get("/assistant/history")
+async def assistant_history(session_id: str = Query("default")):
+    msgs = await db.assistant_conversations.find(
+        {"session_id": session_id}, {"_id": 0}
+    ).sort("timestamp", 1).to_list(100)
+    return msgs
+
+@api_router.delete("/assistant/history")
+async def clear_assistant_history(session_id: str = Query("default")):
+    await db.assistant_conversations.delete_many({"session_id": session_id})
+    return {"cleared": True}
+
+@api_router.get("/assistant/voices")
+async def get_assistant_voices():
+    return {"voices": ASSISTANT_VOICES, "default": "nova"}
+
+
 app.include_router(api_router)
 
 app.add_middleware(
