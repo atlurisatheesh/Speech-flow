@@ -346,6 +346,16 @@ class SpeechFlowWidget(ctk.CTk):
         transparent = "#000001"
         self.configure(fg_color=transparent)
         self.attributes("-transparentcolor", transparent)
+        
+        self.after(10, self._set_noactivate)
+
+    def _set_noactivate(self):
+        # Prevents the widget from stealing cursor focus when clicked
+        GWL_EXSTYLE = -20
+        WS_EX_NOACTIVATE = 0x08000000
+        hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+        style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_NOACTIVATE)
 
         # State
         self.is_recording = False
