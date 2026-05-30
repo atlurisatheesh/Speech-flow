@@ -24,6 +24,7 @@ User imported an existing GitHub project "SpeechFlow" (Wispr Flow-style transcri
 - ✅ Repo review: `website/` (marketing landing) and `electron-app/` (desktop app with feature views) contain real code; `mobileApp/` folder is EMPTY (nothing committed). Voice-cloning research: Gemini & OpenAI TTS = preset voices only, NO user-voice cloning (needs ElevenLabs, paid).
 - ⏸️ Gmail agent: paused by user (needs GOOGLE_CLIENT_ID/SECRET). Playbook obtained; scopes = gmail.readonly + gmail.send.
 - ✅ Fixed frontend build (stale wavesurfer.js webpack cache). Full app runs in workspace.
+- ✅ **Mobile app scaffolded**: Expo/React Native app in `/app/mobileApp` (Dictate, Assistant w/ memory + spoken replies, History, Settings) wired to the backend. Preset voices (no cloning). Runs via `npx expo start`; validated via babel-preset-expo transform + lint (no native simulator in this env).
 - ✅ **NEW: AI Voice Assistant** — listens (Whisper) → thinks with personal memory (GPT) → replies aloud (TTS). Endpoints: `/api/assistant/text`, `/api/assistant/voice`, `/api/assistant/history`, `/api/assistant/voices`.
 - ✅ **NEW: Personal Memory** — `/api/memory` CRUD; injected into the assistant system prompt so replies are personalized/auto-drafted in the user's style; multilingual (replies in the language spoken).
 - ✅ **NEW frontend**: `VoiceAssistant.jsx` — mic recording, text chat, voice playback, voice selector, live Memory panel. Sidebar Sparkles nav button.

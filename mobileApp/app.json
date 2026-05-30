@@ -1,0 +1,28 @@
+{
+  "expo": {
+    "name": "SpeechFlow",
+    "slug": "speechflow-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "ai.speechflow.mobile",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "SpeechFlow needs microphone access to transcribe your speech and talk with your assistant."
+      }
+    },
+    "android": {
+      "package": "ai.speechflow.mobile",
+      "permissions": ["RECORD_AUDIO"]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}
