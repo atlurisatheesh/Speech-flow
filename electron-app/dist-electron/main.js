@@ -49,8 +49,16 @@ let mainWindow = null;
 let openai = null;
 let widgetProcess = null;
 let backendProcess = null;
-if (process.env.OPENAI_API_KEY) {
-    openai = new openai_1.default({ apiKey: process.env.OPENAI_API_KEY });
+// Use the Emergent universal key (OpenAI-compatible proxy) so no personal
+// OpenAI key is required. Falls back to a direct OPENAI_API_KEY if provided.
+const EMERGENT_LLM_KEY = process.env.EMERGENT_LLM_KEY;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const EMERGENT_BASE_URL = (process.env.INTEGRATION_PROXY_URL || 'https://integrations.emergentagent.com') + '/llm';
+if (EMERGENT_LLM_KEY) {
+    openai = new openai_1.default({ apiKey: EMERGENT_LLM_KEY, baseURL: EMERGENT_BASE_URL });
+}
+else if (OPENAI_API_KEY) {
+    openai = new openai_1.default({ apiKey: OPENAI_API_KEY });
 }
 function createWindow() {
     mainWindow = new electron_1.BrowserWindow({
@@ -132,6 +140,10 @@ electron_1.app.whenReady().then(() => {
     electron_1.globalShortcut.register('CommandOrControl+Shift+Space', () => {
         mainWindow?.webContents.send('toggle-dictation');
     });
+    // Command / Transform mode: polish the highlighted text in place (Wispr-style command mode).
+    electron_1.globalShortcut.register('CommandOrControl+Shift+E', () => {
+        transformSelection();
+    });
     electron_1.app.on('activate', () => {
         if (electron_1.BrowserWindow.getAllWindows().length === 0)
             createWindow();
@@ -148,66 +160,170 @@ electron_1.app.on('window-all-closed', () => {
     if (process.platform !== 'darwin')
         electron_1.app.quit();
 });
-// --- IPC Handlers for Progressive Streaming ---
-let audioChunks = [];
-let chunkPromises = [];
-electron_1.ipcMain.on('audio-chunk', async (event, chunkArrayBuffer) => {
-    if (!openai)
-        return;
-    const chunk = Buffer.from(chunkArrayBuffer);
-    audioChunks.push(chunk);
-    // Wispr Flow style: process intermediate chunks in parallel
-    // For simplicity in MVP, we will handle audio processing exactly like the Python progressive streaming
-    // We will need a way to convert raw PCM from browser to WAV, or just send webm/webm directly to OpenAI
-});
+// --- Wispr Flow-style dictation pipeline ---
+// Settings are kept in-memory and can be updated from the renderer via IPC.
+const BACKEND = 'http://localhost:1993';
+let userSettings = { cleanupLevel: 'medium', style: 'professional', language: 'auto' };
+const CLEANUP_LEVELS = {
+    low: 'Lightly clean: fix only punctuation and capitalization. Keep wording natural and verbatim.',
+    medium: 'Remove filler words (um, uh, like, you know), fix grammar and punctuation, resolve self-corrections (keep only the corrected version), and make sentences clear — while preserving the original meaning and the speaker\'s voice.',
+    high: 'Aggressively polish: remove all filler, fix grammar/punctuation, and restructure into clear, well-formatted text while strictly preserving the original meaning.',
+};
+const STYLES = {
+    professional: 'Use a professional, concise tone suitable for work communication.',
+    casual: 'Use a friendly, casual, conversational tone.',
+    technical: 'Preserve technical terminology and be precise.',
+    creative: 'Use expressive, engaging language.',
+};
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function backendGet(pathName) {
+    try {
+        const res = await fetch(`${BACKEND}${pathName}`);
+        if (!res.ok)
+            return [];
+        return await res.json();
+    }
+    catch {
+        return [];
+    }
+}
+// AI cleanup of dictated text (the signature Wispr "auto-edit").
+async function cleanupText(text, level, style) {
+    if (!openai || !text || level === 'none')
+        return text;
+    try {
+        const levelInstr = CLEANUP_LEVELS[level] || CLEANUP_LEVELS.medium;
+        const styleInstr = STYLES[style] || '';
+        const response = await openai.chat.completions.create({
+            model: 'gpt-4o-mini',
+            messages: [
+                {
+                    role: 'system',
+                    content: `You are an expert editor that cleans up dictated speech. ${levelInstr} ${styleInstr} Keep the user's language (do not translate). Return ONLY the cleaned text, with no preamble or quotes.`,
+                },
+                { role: 'user', content: text },
+            ],
+            temperature: 0.2,
+        });
+        return response.choices[0].message.content?.trim() || text;
+    }
+    catch (e) {
+        return text;
+    }
+}
+// Expand snippet trigger phrases into their saved content (text expansion).
+async function expandSnippets(text) {
+    const snippets = await backendGet('/api/snippets');
+    let out = text;
+    for (const s of snippets) {
+        if (!s.trigger_phrase || !s.content)
+            continue;
+        const escaped = s.trigger_phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        out = out.replace(new RegExp(escaped, 'gi'), s.content);
+    }
+    return out;
+}
+function saveToHistory(text) {
+    try {
+        const postData = JSON.stringify({ text });
+        fetch(`${BACKEND}/api/transcriptions`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: postData,
+        }).catch((err) => console.warn('Backend save error:', err?.message));
+    }
+    catch (saveErr) {
+        console.warn('Could not save to backend:', saveErr);
+    }
+}
 electron_1.ipcMain.handle('get-active-window', async () => {
     return await getActiveWindowName();
 });
-electron_1.ipcMain.handle('transcribe-final', async (event, blobBuffer) => {
+electron_1.ipcMain.on('update-settings', (_event, s) => {
+    userSettings = { ...userSettings, ...s };
+});
+electron_1.ipcMain.handle('get-settings', () => userSettings);
+async function processAudioBuffer(blobBuffer, opts) {
     if (!openai)
         return 'No API Key';
+    const buffer = Buffer.from(blobBuffer);
+    const tempPath = path.join(electron_1.app.getPath('temp'), `speech-${Date.now()}.webm`);
+    fs.writeFileSync(tempPath, buffer);
     try {
-        const buffer = Buffer.from(blobBuffer);
-        // Write temp file
-        const tempPath = path.join(electron_1.app.getPath('temp'), 'speech.webm');
-        fs.writeFileSync(tempPath, buffer);
-        const response = await openai.audio.transcriptions.create({
-            file: fs.createReadStream(tempPath),
-            model: 'whisper-1',
-        });
-        const text = response.text.trim();
+        // 1) Bias Whisper with the user's personal dictionary for correct spelling of custom words/names.
+        const dictWords = await backendGet('/api/dictionary');
+        const dictPrompt = dictWords.map((w) => w.word).filter(Boolean).join(', ');
+        const transcribeParams = { file: fs.createReadStream(tempPath), model: 'whisper-1' };
+        if (dictPrompt)
+            transcribeParams.prompt = dictPrompt;
+        if (userSettings.language && userSettings.language !== 'auto')
+            transcribeParams.language = userSettings.language;
+        const response = await openai.audio.transcriptions.create(transcribeParams);
+        let text = (response.text || '').trim();
         if (text) {
-            electron_1.clipboard.writeText(text);
-            setTimeout(() => pasteAtCursor(), 150);
-            // Save to backend for history (fire-and-forget)
-            try {
-                const http = await Promise.resolve().then(() => __importStar(require('http')));
-                const postData = JSON.stringify({ text });
-                const req = http.request({
-                    hostname: 'localhost',
-                    port: 1993,
-                    path: '/api/transcriptions',
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Content-Length': Buffer.byteLength(postData),
-                    },
-                });
-                req.on('error', (err) => console.warn('Backend save error:', err.message));
-                req.write(postData);
-                req.end();
+            // 2) Auto-clean (filler removal, punctuation, formatting, style).
+            text = await cleanupText(text, userSettings.cleanupLevel, userSettings.style);
+            // 3) Expand any snippet triggers into full text.
+            text = await expandSnippets(text);
+            // 4) Optionally paste into the focused app + save to history.
+            if (opts.paste) {
+                electron_1.clipboard.writeText(text);
+                setTimeout(() => pasteAtCursor(), 150);
             }
-            catch (saveErr) {
-                console.warn('Could not save to backend:', saveErr);
-            }
+            if (opts.save)
+                saveToHistory(text);
         }
         return text;
+    }
+    finally {
+        try {
+            fs.unlinkSync(tempPath);
+        }
+        catch { /* noop */ }
+    }
+}
+electron_1.ipcMain.handle('transcribe-final', async (_event, blobBuffer) => {
+    try {
+        return await processAudioBuffer(blobBuffer, { paste: true, save: true });
     }
     catch (error) {
         console.error('Transcription error:', error);
         return 'Error: ' + error.message;
     }
 });
+// Transcribe + clean but DON'T paste (used by the in-app Scratchpad).
+electron_1.ipcMain.handle('transcribe-text', async (_event, blobBuffer) => {
+    try {
+        return await processAudioBuffer(blobBuffer, { paste: false, save: true });
+    }
+    catch (error) {
+        console.error('Transcription error:', error);
+        return 'Error: ' + error.message;
+    }
+});
+// Command / Transform mode: polish the currently selected text in place.
+function sendKeys(keys) {
+    const script = `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('${keys}')`;
+    (0, child_process_1.exec)(`powershell -command "${script}"`, (err) => {
+        if (err)
+            console.error('SendKeys error:', err);
+    });
+}
+async function transformSelection() {
+    if (!openai)
+        return;
+    // Copy the user's current selection, then read it from the clipboard.
+    sendKeys('^c');
+    await sleep(220);
+    const selected = electron_1.clipboard.readText();
+    if (!selected || !selected.trim())
+        return;
+    const polished = await cleanupText(selected, 'high', userSettings.style);
+    if (polished && polished.trim()) {
+        electron_1.clipboard.writeText(polished);
+        setTimeout(() => pasteAtCursor(), 150);
+    }
+}
 electron_1.ipcMain.handle('enhance-text', async (event, text) => {
     if (!openai || !text)
         return text;

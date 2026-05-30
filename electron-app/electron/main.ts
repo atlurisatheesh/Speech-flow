@@ -15,8 +15,17 @@ let openai: OpenAI | null = null;
 let widgetProcess: ChildProcess | null = null;
 let backendProcess: ChildProcess | null = null;
 
-if (process.env.OPENAI_API_KEY) {
-  openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+// Use the Emergent universal key (OpenAI-compatible proxy) so no personal
+// OpenAI key is required. Falls back to a direct OPENAI_API_KEY if provided.
+const EMERGENT_LLM_KEY = process.env.EMERGENT_LLM_KEY;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const EMERGENT_BASE_URL =
+  (process.env.INTEGRATION_PROXY_URL || 'https://integrations.emergentagent.com') + '/llm';
+
+if (EMERGENT_LLM_KEY) {
+  openai = new OpenAI({ apiKey: EMERGENT_LLM_KEY, baseURL: EMERGENT_BASE_URL });
+} else if (OPENAI_API_KEY) {
+  openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 }
 
 function createWindow() {
@@ -106,6 +115,11 @@ app.whenReady().then(() => {
     mainWindow?.webContents.send('toggle-dictation');
   });
 
+  // Command / Transform mode: polish the highlighted text in place (Wispr-style command mode).
+  globalShortcut.register('CommandOrControl+Shift+E', () => {
+    transformSelection();
+  });
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
@@ -121,72 +135,173 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-// --- IPC Handlers for Progressive Streaming ---
+// --- Wispr Flow-style dictation pipeline ---
+// Settings are kept in-memory and can be updated from the renderer via IPC.
+const BACKEND = 'http://localhost:1993';
 
-let audioChunks: Buffer[] = [];
-let chunkPromises: Promise<string>[] = [];
+type AppSettings = { cleanupLevel: 'none' | 'low' | 'medium' | 'high'; style: string; language: string };
+let userSettings: AppSettings = { cleanupLevel: 'medium', style: 'professional', language: 'auto' };
 
-ipcMain.on('audio-chunk', async (event, chunkArrayBuffer) => {
-  if (!openai) return;
-  
-  const chunk = Buffer.from(chunkArrayBuffer);
-  audioChunks.push(chunk);
+const CLEANUP_LEVELS: Record<string, string> = {
+  low: 'Lightly clean: fix only punctuation and capitalization. Keep wording natural and verbatim.',
+  medium:
+    'Remove filler words (um, uh, like, you know), fix grammar and punctuation, resolve self-corrections (keep only the corrected version), and make sentences clear — while preserving the original meaning and the speaker\'s voice.',
+  high:
+    'Aggressively polish: remove all filler, fix grammar/punctuation, and restructure into clear, well-formatted text while strictly preserving the original meaning.',
+};
 
-  // Wispr Flow style: process intermediate chunks in parallel
-  // For simplicity in MVP, we will handle audio processing exactly like the Python progressive streaming
-  // We will need a way to convert raw PCM from browser to WAV, or just send webm/webm directly to OpenAI
-});
+const STYLES: Record<string, string> = {
+  professional: 'Use a professional, concise tone suitable for work communication.',
+  casual: 'Use a friendly, casual, conversational tone.',
+  technical: 'Preserve technical terminology and be precise.',
+  creative: 'Use expressive, engaging language.',
+};
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function backendGet(pathName: string): Promise<any[]> {
+  try {
+    const res = await fetch(`${BACKEND}${pathName}`);
+    if (!res.ok) return [];
+    return await res.json();
+  } catch {
+    return [];
+  }
+}
+
+// AI cleanup of dictated text (the signature Wispr "auto-edit").
+async function cleanupText(text: string, level: string, style: string): Promise<string> {
+  if (!openai || !text || level === 'none') return text;
+  try {
+    const levelInstr = CLEANUP_LEVELS[level] || CLEANUP_LEVELS.medium;
+    const styleInstr = STYLES[style] || '';
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content: `You are an expert editor that cleans up dictated speech. ${levelInstr} ${styleInstr} Keep the user's language (do not translate). Return ONLY the cleaned text, with no preamble or quotes.`,
+        },
+        { role: 'user', content: text },
+      ],
+      temperature: 0.2,
+    });
+    return response.choices[0].message.content?.trim() || text;
+  } catch (e) {
+    return text;
+  }
+}
+
+// Expand snippet trigger phrases into their saved content (text expansion).
+async function expandSnippets(text: string): Promise<string> {
+  const snippets = await backendGet('/api/snippets');
+  let out = text;
+  for (const s of snippets) {
+    if (!s.trigger_phrase || !s.content) continue;
+    const escaped = s.trigger_phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    out = out.replace(new RegExp(escaped, 'gi'), s.content);
+  }
+  return out;
+}
+
+function saveToHistory(text: string) {
+  try {
+    const postData = JSON.stringify({ text });
+    fetch(`${BACKEND}/api/transcriptions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: postData,
+    }).catch((err) => console.warn('Backend save error:', err?.message));
+  } catch (saveErr) {
+    console.warn('Could not save to backend:', saveErr);
+  }
+}
 
 ipcMain.handle('get-active-window', async () => {
   return await getActiveWindowName();
 });
 
-ipcMain.handle('transcribe-final', async (event, blobBuffer) => {
+ipcMain.on('update-settings', (_event, s: Partial<AppSettings>) => {
+  userSettings = { ...userSettings, ...s };
+});
+
+ipcMain.handle('get-settings', () => userSettings);
+
+async function processAudioBuffer(blobBuffer: any, opts: { paste: boolean; save: boolean }): Promise<string> {
   if (!openai) return 'No API Key';
+  const buffer = Buffer.from(blobBuffer);
+  const tempPath = path.join(app.getPath('temp'), `speech-${Date.now()}.webm`);
+  fs.writeFileSync(tempPath, buffer);
   try {
-    const buffer = Buffer.from(blobBuffer);
-    
-    // Write temp file
-    const tempPath = path.join(app.getPath('temp'), 'speech.webm');
-    fs.writeFileSync(tempPath, buffer);
+    // 1) Bias Whisper with the user's personal dictionary for correct spelling of custom words/names.
+    const dictWords = await backendGet('/api/dictionary');
+    const dictPrompt = dictWords.map((w: any) => w.word).filter(Boolean).join(', ');
 
-    const response = await openai.audio.transcriptions.create({
-      file: fs.createReadStream(tempPath),
-      model: 'whisper-1',
-    });
+    const transcribeParams: any = { file: fs.createReadStream(tempPath), model: 'whisper-1' };
+    if (dictPrompt) transcribeParams.prompt = dictPrompt;
+    if (userSettings.language && userSettings.language !== 'auto') transcribeParams.language = userSettings.language;
 
-    const text = response.text.trim();
+    const response = await openai.audio.transcriptions.create(transcribeParams);
+    let text = (response.text || '').trim();
+
     if (text) {
-      clipboard.writeText(text);
-      setTimeout(() => pasteAtCursor(), 150);
-
-      // Save to backend for history (fire-and-forget)
-      try {
-        const http = await import('http');
-        const postData = JSON.stringify({ text });
-        const req = http.request({
-          hostname: 'localhost',
-          port: 1993,
-          path: '/api/transcriptions',
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Content-Length': Buffer.byteLength(postData),
-          },
-        });
-        req.on('error', (err: Error) => console.warn('Backend save error:', err.message));
-        req.write(postData);
-        req.end();
-      } catch (saveErr) {
-        console.warn('Could not save to backend:', saveErr);
+      // 2) Auto-clean (filler removal, punctuation, formatting, style).
+      text = await cleanupText(text, userSettings.cleanupLevel, userSettings.style);
+      // 3) Expand any snippet triggers into full text.
+      text = await expandSnippets(text);
+      // 4) Optionally paste into the focused app + save to history.
+      if (opts.paste) {
+        clipboard.writeText(text);
+        setTimeout(() => pasteAtCursor(), 150);
       }
+      if (opts.save) saveToHistory(text);
     }
     return text;
+  } finally {
+    try { fs.unlinkSync(tempPath); } catch { /* noop */ }
+  }
+}
+
+ipcMain.handle('transcribe-final', async (_event, blobBuffer) => {
+  try {
+    return await processAudioBuffer(blobBuffer, { paste: true, save: true });
   } catch (error: any) {
     console.error('Transcription error:', error);
     return 'Error: ' + error.message;
   }
 });
+
+// Transcribe + clean but DON'T paste (used by the in-app Scratchpad).
+ipcMain.handle('transcribe-text', async (_event, blobBuffer) => {
+  try {
+    return await processAudioBuffer(blobBuffer, { paste: false, save: true });
+  } catch (error: any) {
+    console.error('Transcription error:', error);
+    return 'Error: ' + error.message;
+  }
+});
+
+// Command / Transform mode: polish the currently selected text in place.
+function sendKeys(keys: string) {
+  const script = `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('${keys}')`;
+  exec(`powershell -command "${script}"`, (err) => {
+    if (err) console.error('SendKeys error:', err);
+  });
+}
+
+async function transformSelection() {
+  if (!openai) return;
+  // Copy the user's current selection, then read it from the clipboard.
+  sendKeys('^c');
+  await sleep(220);
+  const selected = clipboard.readText();
+  if (!selected || !selected.trim()) return;
+  const polished = await cleanupText(selected, 'high', userSettings.style);
+  if (polished && polished.trim()) {
+    clipboard.writeText(polished);
+    setTimeout(() => pasteAtCursor(), 150);
+  }
+}
 
 ipcMain.handle('enhance-text', async (event, text) => {
   if (!openai || !text) return text;
